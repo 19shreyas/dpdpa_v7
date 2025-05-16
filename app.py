@@ -130,32 +130,51 @@ def is_valid_block(text):
     return True
 
 # --- Prompt Generator ---
-def build_prompt(section_id, checklist_items, block_text):
-    checklist_text = "\n".join([
-        f"- {item['id']}: {item['text']}" for item in checklist_items
-    ])
+def build_prompt(block_text, checklist_items, section_title):
+    prompt = f"""You are evaluating a Privacy Policy block against Section {section_title} of the Digital Personal Data Protection Act, 2023 (DPDPA).
 
-    prompt = f"""
-    You are a data privacy compliance checker for the Indian DPDPA law.
+    The goal is to check compliance **for each checklist item below**. For each item, you must return:
+    1. The match **status**: "Explicitly Mentioned", "Partially Mentioned", or "Missing".
+    2. A **matched sentence** from the block (if any).
+    3. A short **justification** that clearly explains why it was marked that way.
     
-    Evaluate the following policy block against each checklist item below.
-    Use ONLY the block — do not assume anything not written.
+    ONLY mark a sentence as:
+    - **Explicitly Mentioned** if it uses **clear and direct language** fulfilling the legal clause.
+    - **Partially Mentioned** if the intent is **implied AND relevant**, but the language is vague, incomplete, or not legally aligned.
+    - **Missing** if the clause is **not addressed at all**, or is **addressed in an unrelated context** (e.g., internal IT access, generic marketing, etc.).
     
-    Checklist (Section {section_id}):
-    {checklist_text}
+    Checklist Items:
+    {json.dumps(checklist_items, indent=2)}
     
     Policy Block:
-    \"\"\"{block_text}\"\"\"
+    \"\"\"
+    {block_text}
+    \"\"\"
     
-    For each checklist item, return:
-    - checklist_id
-    - status: Explicitly Mentioned / Partially Mentioned / Missing
-    - matched_sentence: quote from the block, or blank if not found
-    - justification: a short explanation for your choice
+    Your response must be a JSON object like this:
+    {{
+      "block_id": "BLOCKX",
+      "section_id": "{section_title.split(' ')[0]}",
+      "evaluations": [
+        {{
+          "checklist_id": "...",
+          "status": "...",
+          "matched_sentence": "...(exact matching sentence from the block)",
+          "justification": "..."
+        }},
+        ...
+      ]
+    }}
     
-    Return your answer as a JSON list. Do NOT add extra text.
-    """
-    return prompt.strip()
+    Important Rules:
+    - Do NOT invent sentences. Only quote sentences that actually appear in the block.
+    - If the checklist item is about **consent of Data Principal**, exclude lines about employee access, contractors, etc.
+    - If the checklist item is about **lawful purpose**, ensure it mentions legality clearly. "Better services" is NOT enough.
+    - If any matched sentence is vague, choose **'Partially Mentioned'** or **'Missing'**, not Explicit.
+    
+    Only output the JSON object. Do not include explanations or commentary."""
+    return prompt
+
 
 # --- GPT Call ---
 import json
