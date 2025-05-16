@@ -219,74 +219,79 @@ def run_all_section_block_evaluations(policy_text):
 def aggregate_checklist_summary(gpt_outputs):
     summary = {}
 
-    # Lookup for checklist item text
+    # Create lookup for checklist item text
     checklist_lookup = {
         item["id"]: item["text"]
         for section in dpdpa_checklists.values()
         for item in section["items"]
     }
 
-    # Temp store to track all block-level status for cleanup
-    status_tracker = {}
-
     for result in gpt_outputs:
-        for item in result["Checklist Evaluation"]:
-            cid = item["Checklist Item ID"]
-            status = item["Status"]
-            sentence = item["Matched Sentence"]
-            justification = item["Justification"]
-            block_id = result["BlockID"]
+        block_id = result["BlockID"]
+
+        for eval in result["Checklist Evaluation"]:
+            cid = eval["Checklist Item ID"]
+            status = eval["Status"]
+            sentence = eval["Matched Sentence"]
+            justification = eval["Justification"]
 
             if cid not in summary:
                 summary[cid] = {
                     "Checklist Text": checklist_lookup.get(cid, ""),
-                    "Coverage": "Missing",
+                    "Checklist Item ID": cid,
                     "Matched In": [],
                     "Matched Sentences": [],
-                    "Justifications": [],
+                    "Justifications": {
+                        "Explicitly Mentioned": [],
+                        "Partially Mentioned": [],
+                        "Missing": []
+                    },
+                    "Coverage": "Missing",
                     "Confidence Score": 0.0
                 }
-                status_tracker[cid] = []
-
-            # Track status from each block for final cleanup
-            status_tracker[cid].append(status)
 
             if status == "Explicitly Mentioned":
-                summary[cid]["Coverage"] = "Explicitly Mentioned"
-                summary[cid]["Confidence Score"] = 1.0
                 summary[cid]["Matched In"].append(block_id)
                 summary[cid]["Matched Sentences"].append(sentence)
-                summary[cid]["Justifications"].append(justification)
+                summary[cid]["Justifications"]["Explicitly Mentioned"].append(
+                    f"[{block_id}] {justification}"
+                )
 
             elif status == "Partially Mentioned":
-                if summary[cid]["Coverage"] != "Explicitly Mentioned":
-                    summary[cid]["Coverage"] = "Partially Mentioned"
-                    summary[cid]["Confidence Score"] = max(0.5, summary[cid]["Confidence Score"])
-                    summary[cid]["Matched In"].append(block_id)
-                    summary[cid]["Matched Sentences"].append(sentence)
-                    summary[cid]["Justifications"].append(justification)
+                summary[cid]["Matched In"].append(block_id)
+                summary[cid]["Matched Sentences"].append(sentence)
+                summary[cid]["Justifications"]["Partially Mentioned"].append(
+                    f"[{block_id}] {justification}"
+                )
 
             elif status == "Missing":
-                summary[cid]["Justifications"].append(justification)
+                summary[cid]["Justifications"]["Missing"].append(
+                    f"[{block_id}] {justification}"
+                )
 
-    # Fix: Clean up contradictions in justifications if Explicitly Mentioned
+    # Final classification
     for cid, item in summary.items():
-        if item["Coverage"] == "Explicitly Mentioned":
-            matched_just_count = len(item["Matched Sentences"])
-            item["Justifications"] = item["Justifications"][:matched_just_count]
-            if matched_just_count > 5:
-                item["Justifications"].append(f"...and {matched_just_count - 5} more")
+        num_explicit = len(item["Justifications"]["Explicitly Mentioned"])
+        num_partial = len(item["Justifications"]["Partially Mentioned"])
 
-        elif item["Coverage"] == "Partially Mentioned":
-            if len(item["Justifications"]) > 5:
-                item["Justifications"] = item["Justifications"][:5] + [f"...and {len(item['Justifications']) - 5} more"]
+        if num_explicit > 0:
+            item["Coverage"] = "Explicitly Mentioned"
+            item["Confidence Score"] = 1.0
+        elif num_partial > 0:
+            item["Coverage"] = "Partially Mentioned"
+            item["Confidence Score"] = 0.5
+        else:
+            item["Coverage"] = "Missing"
+            item["Confidence Score"] = 0.0
 
-        elif item["Coverage"] == "Missing":
-            if len(item["Justifications"]) > 5:
-                item["Justifications"] = item["Justifications"][:5] + [f"...and {len(item['Justifications']) - 5} more"]
+        # Cap justifications to max 5 (per type)
+        for k in item["Justifications"]:
+            if len(item["Justifications"][k]) > 5:
+                item["Justifications"][k] = item["Justifications"][k][:5] + [
+                    f"...and {len(item['Justifications'][k]) - 5} more"
+                ]
 
     return summary
-
 
 def set_custom_css():
     st.markdown("""
@@ -566,10 +571,9 @@ elif menu == "Policy Compliance Checker":
                 st.success("✅ GPT evaluation complete. Merging results...")
                 checklist_summary = aggregate_checklist_summary(gpt_outputs)
     
-                # ✅ Display output
                 st.markdown("### 📋 Final Checklist Coverage")
                 for cid, item in checklist_summary.items():
-                    coverage = item['Coverage']
+                    coverage = item["Coverage"]
                     color = {
                         "Explicitly Mentioned": "#198754",
                         "Partially Mentioned": "#FFC107",
@@ -591,12 +595,12 @@ elif menu == "Policy Compliance Checker":
                             if len(item['Matched Sentences']) > 5:
                                 st.markdown(f"_...and {len(item['Matched Sentences']) - 5} more_")
                 
-                    if item['Justifications']:
+                    coverage_justifications = item["Justifications"].get(item["Coverage"], [])
+                    if coverage_justifications:
                         with st.expander("🧾 Justifications"):
-                            for j in item['Justifications'][:5]:
+                            for j in coverage_justifications:
                                 st.markdown(f"- {j}")
-                            if len(item['Justifications']) > 5:
-                                st.markdown(f"_...and {len(item['Justifications']) - 5} more_")
                 
                     st.markdown("---")
+
 
