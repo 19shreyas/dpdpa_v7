@@ -127,7 +127,6 @@ def create_block_prompt(section_id, block_text, checklist, block_id):
         f"{item['id']}. {item['text']}" for item in checklist
     )
 
-    # Escape block text safely for GPT prompt
     block_text_escaped = json.dumps(block_text)
 
     prompt = f"""
@@ -146,8 +145,13 @@ def create_block_prompt(section_id, block_text, checklist, block_id):
     For each checklist item, return:
     - Checklist Item ID
     - Status: Explicitly Mentioned / Partially Mentioned / Missing
-    - Matched Sentence(s) from the block (verbatim)
+    - Matched Sentence from the block (verbatim — quote only exact content from the policy block)
     - Justification for why you marked it so
+    
+    ⚠️ IMPORTANT RULES:
+    - Only mark a checklist item as "Explicitly Mentioned" or "Partially Mentioned" if you find a real, matching sentence in the block.
+    - DO NOT invent, rephrase, or summarize any sentence. Quote only what is present in the block.
+    - If no matching sentence is found in the block, mark the item as "Missing".
     
     Return output in this exact JSON format:
     {{
@@ -169,6 +173,7 @@ def create_block_prompt(section_id, block_text, checklist, block_id):
     }}
     """
     return prompt.strip()
+
 
 # --- GPT Call ---
 def call_gpt(prompt):
@@ -192,13 +197,57 @@ def compute_score_and_level(evaluations, total_items):
         level = "Partially Compliant"
     return round(score, 2), level
 
+def is_sentence_in_block(sentence, block_text):
+    if not sentence or not block_text:
+        return False
+    clean_block = block_text.replace("\n", " ").strip().lower()
+    clean_sentence = sentence.strip().lower()
+    return clean_sentence in clean_block
+
+
 # --- Analyzer ---
+def is_sentence_in_block(sentence, block_text):
+    if not sentence or not block_text:
+        return False
+    clean_block = block_text.replace("\n", " ").strip().lower()
+    clean_sentence = sentence.strip().lower()
+    return clean_sentence in clean_block
+
 def analyze_block_against_section(section_id, block_text, block_id):
     checklist = dpdpa_checklists[section_id]['items']
     prompt = create_block_prompt(section_id, block_text, checklist, block_id)
+
     try:
-        response = call_gpt(prompt)
-        return response
+        response_data = call_gpt(prompt)
+
+        checklist_results = []
+        for eval in response_data:
+            status = eval["Status"]
+            matched_sentence = eval["Matched Sentence"]
+            justification = eval["Justification"]
+
+            # ✅ Enforce hallucination filter
+            if status in ["Explicitly Mentioned", "Partially Mentioned"]:
+                if not is_sentence_in_block(matched_sentence, block_text):
+                    status = "Missing"
+                    matched_sentence = None
+                    justification = "The claimed matched sentence is not found in the actual policy block."
+
+            checklist_results.append({
+                "Checklist Item ID": eval["Checklist Item ID"],
+                "Status": status,
+                "Matched Sentence": matched_sentence,
+                "Justification": justification
+            })
+
+        return {
+            "Section ID": section_id,
+            "Section Title": dpdpa_checklists[section_id]["title"],
+            "BlockID": block_id,
+            "Block": block_text,
+            "Checklist Evaluation": checklist_results
+        }
+
     except Exception as e:
         print(f"Error for block {block_id}, section {section_id}: {e}")
         return None
