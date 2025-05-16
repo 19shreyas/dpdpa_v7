@@ -524,8 +524,10 @@ elif menu == "Policy Compliance Checker":
                 checklist_ids = [item["id"] for item in checklist_items]
                 for block in blocks:
                     result = analyze_block_against_section(section_key, block, checklist_items, client)
+                    st.write(f"🔍 GPT result for {block['block_id']}", result)
                     if result:
                         update_compiled_output(compiledOutput, result)
+                        st.write("✅ Updating compiled output with:", result)
                 final_summary = generate_final_summary(compiledOutput, checklist_ids)
     
             st.success("✅ GPT evaluation complete. Displaying results...")
