@@ -546,18 +546,34 @@ elif menu == "Policy Compliance Checker":
                 # ✅ Display output
                 st.markdown("### 📋 Final Checklist Coverage")
                 for cid, item in checklist_summary.items():
-                    st.markdown(f"**{cid} — {item['Checklist Text']}**")
-                    st.markdown(f"- **Coverage:** {item['Coverage']}")
-                    st.markdown(f"- **Confidence Score:** {item['Confidence Score']}")
-                    if item['Matched In']:
-                        st.markdown(f"- **Matched In:** {', '.join(item['Matched In'])}")
+                    coverage = item['Coverage']
+                    color = {
+                        "Explicitly Mentioned": "#198754",
+                        "Partially Mentioned": "#FFC107",
+                        "Missing": "#DC3545"
+                    }.get(coverage, "#6c757d")
+                
+                    st.markdown(f"""
+                    <div style="margin-bottom:12px;">
+                        <strong>{cid} — {item['Checklist Text']}</strong><br>
+                        <span style="color:white;background-color:{color};padding:3px 10px;border-radius:6px;font-size:13px;">{coverage}</span>
+                        <span style="margin-left:10px;">Confidence Score: {item['Confidence Score']}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
                     if item['Matched Sentences']:
-                        st.markdown("**Matched Sentences:**")
-                        for s in item['Matched Sentences']:
-                            st.markdown(f"> {s}")
+                        with st.expander("📌 Matched Sentences"):
+                            for s in item['Matched Sentences'][:5]:
+                                st.markdown(f"> {s}")
+                            if len(item['Matched Sentences']) > 5:
+                                st.markdown(f"_...and {len(item['Matched Sentences']) - 5} more_")
+                
                     if item['Justifications']:
-                        st.markdown("**Justifications:**")
-                        for j in item['Justifications']:
-                            st.markdown(f"- {j}")
+                        with st.expander("🧾 Justifications"):
+                            for j in item['Justifications'][:5]:
+                                st.markdown(f"- {j}")
+                            if len(item['Justifications']) > 5:
+                                st.markdown(f"_...and {len(item['Justifications']) - 5} more_")
+                
                     st.markdown("---")
 
