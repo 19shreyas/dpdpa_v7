@@ -158,6 +158,10 @@ def build_prompt(section_id, checklist_items, block_text):
     return prompt.strip()
 
 # --- GPT Call ---
+import json
+import re
+import streamlit as st
+
 def analyze_block_against_section(section_id, block, checklist_items, client):
     try:
         prompt = build_prompt(section_id, checklist_items, block["text"])
@@ -172,7 +176,25 @@ def analyze_block_against_section(section_id, block, checklist_items, client):
         )
 
         content = response.choices[0].message.content.strip()
-        evaluations = json.loads(content)
+
+        # ✅ Show raw output for debugging
+        # st.write(f"🧾 GPT raw output for {block['block_id']}:")
+        # st.code(content)
+
+        # ✅ Case 1: Empty or not starting with JSON
+        if not content or "[" not in content:
+            st.warning(f"⚠️ GPT returned non-JSON output for {block['block_id']}")
+            st.code(content)
+            return None
+
+        # ✅ Case 2: Extract first JSON list using regex (in case GPT adds text)
+        json_match = re.search(r"\[\s*{.*?}\s*\]", content, re.DOTALL)
+        if not json_match:
+            st.warning(f"⚠️ Could not extract valid JSON from GPT response for {block['block_id']}")
+            st.code(content)
+            return None
+
+        evaluations = json.loads(json_match.group(0))
 
         return {
             "block_id": block["block_id"],
@@ -183,6 +205,7 @@ def analyze_block_against_section(section_id, block, checklist_items, client):
     except Exception as e:
         st.error(f"❌ GPT error on {block['block_id']}: {e}")
         return None
+
 
         
 def update_compiled_output(compiledOutput, gpt_result):
