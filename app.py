@@ -123,7 +123,6 @@ def extract_text_from_pdf(pdf_file):
 
 def is_valid_block(text):
     text = text.strip()
-
     # 1. Must be at least 10 words
     if len(text.split()) < 8:
         return False
@@ -131,228 +130,125 @@ def is_valid_block(text):
     return True
 
 # --- Prompt Generator ---
-def create_block_prompt(section_id, block_text, checklist, block_id):
-    checklist_text = "\n".join(
-        f"{item['id']}. {item['text']}" for item in checklist
-    )
-
-    block_text_escaped = json.dumps(block_text)
+def build_prompt(section_id, checklist_items, block_text):
+    checklist_text = "\n".join([
+        f"- {item['id']}: {item['text']}" for item in checklist_items
+    ])
 
     prompt = f"""
-    You are a compliance analyst evaluating whether the following privacy policy block meets the obligations under Section {section_id} of the Digital Personal Data Protection Act (DPDPA), 2023.
+    You are a data privacy compliance checker for the Indian DPDPA law.
     
-    Section Title: {dpdpa_checklists[section_id]['title']}
+    Evaluate the following policy block against each checklist item below.
+    Use ONLY the block — do not assume anything not written.
     
-    **Checklist:**
-    Evaluate the block against each item in the checklist below:
-    
+    Checklist (Section {section_id}):
     {checklist_text}
     
-    **Policy Block (Block ID: {block_id}):**
-    {block_text_escaped}
+    Policy Block:
+    \"\"\"{block_text}\"\"\"
     
     For each checklist item, return:
-    - Checklist Item ID
-    - Status: Explicitly Mentioned / Partially Mentioned / Missing
-    - Matched Sentence from the block (verbatim — quote only exact content from the policy block)
-    - Justification for why you marked it so
+    - checklist_id
+    - status: Explicitly Mentioned / Partially Mentioned / Missing
+    - matched_sentence: quote from the block, or blank if not found
+    - justification: a short explanation for your choice
     
-    ⚠️ IMPORTANT RULES:
-    - Only mark a checklist item as "Explicitly Mentioned" or "Partially Mentioned" if you find a real, matching sentence in the block.
-    - DO NOT invent, rephrase, or summarize any sentence. Quote only what is present in the block.
-    - If no matching sentence is found in the block, mark the item as "Missing".
-    
-    Return output in this exact JSON format:
-    {{
-      "Section ID": "{section_id}",
-      "Section Title": "{dpdpa_checklists[section_id]['title']}",
-      "BlockID": "{block_id}",
-      "Block": {block_text_escaped},
-      "Checklist Evaluation": [
-        {{
-          "Checklist Item ID": "6.1",
-          "Status": "Explicitly Mentioned",
-          "Matched Sentence": "...",
-          "Justification": "..."
-        }}
-        // include all checklist items, even if Missing
-      ],
-      "Match Level": "Partially Compliant",
-      "Compliance Score": 0.4
-    }}
+    Return your answer as a JSON list. Do NOT add extra text.
     """
     return prompt.strip()
 
-
 # --- GPT Call ---
-def call_gpt(prompt):
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-    return json.loads(response.choices[0].message.content)
-
-# --- Scoring Logic ---
-def compute_score_and_level(evaluations, total_items):
-    matched = [e for e in evaluations if e["Status"].lower() == "explicitly mentioned"]
-    partial = [e for e in evaluations if e["Status"].lower() == "partially mentioned"]
-    score = (len(matched) + 0.5 * len(partial)) / total_items if total_items else 0.0
-    if score >= 1.0:
-        level = "Fully Compliant"
-    elif score == 0:
-        level = "Non-Compliant"
-    else:
-        level = "Partially Compliant"
-    return round(score, 2), level
-
-def is_sentence_in_block(sentence, block_text):
-    if not sentence or not block_text:
-        return False
-    clean_block = block_text.replace("\n", " ").strip().lower()
-    clean_sentence = sentence.strip().lower()
-    return clean_sentence in clean_block
-
-
-# --- Analyzer ---
-def is_sentence_in_block(sentence, block_text):
-    if not sentence or not block_text:
-        return False
-    clean_block = block_text.replace("\n", " ").strip().lower()
-    clean_sentence = sentence.strip().lower()
-    return clean_sentence in clean_block
-
-def analyze_block_against_section(section_id, block_text, block_id):
-    checklist = dpdpa_checklists[section_id]['items']
-    prompt = create_block_prompt(section_id, block_text, checklist, block_id)
-
+def analyze_block_against_section(section_id, block, checklist_items, client):
     try:
-        response_data = call_gpt(prompt)
+        prompt = build_prompt(section_id, checklist_items, block["text"])
 
-        checklist_results = []
-        for eval in response_data:
-            status = eval["Status"]
-            matched_sentence = eval["Matched Sentence"]
-            justification = eval["Justification"]
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            temperature=0,
+            messages=[
+                {"role": "system", "content": "You are a legal compliance evaluator."},
+                {"role": "user", "content": prompt}
+            ]
+        )
 
-            # ✅ Enforce hallucination filter
-            if status in ["Explicitly Mentioned", "Partially Mentioned"]:
-                if not is_sentence_in_block(matched_sentence, block_text):
-                    status = "Missing"
-                    matched_sentence = None
-                    justification = "The claimed matched sentence is not found in the actual policy block."
-
-            checklist_results.append({
-                "Checklist Item ID": eval["Checklist Item ID"],
-                "Status": status,
-                "Matched Sentence": matched_sentence,
-                "Justification": justification
-            })
+        content = response.choices[0].message.content.strip()
+        evaluations = json.loads(content)
 
         return {
-            "Section ID": section_id,
-            "Section Title": dpdpa_checklists[section_id]["title"],
-            "BlockID": block_id,
-            "Block": block_text,
-            "Checklist Evaluation": checklist_results
+            "block_id": block["block_id"],
+            "section_id": section_id,
+            "evaluations": evaluations
         }
 
     except Exception as e:
-        print(f"Error for block {block_id}, section {section_id}: {e}")
+        print(f"GPT error on block {block['block_id']}: {e}")
         return None
+
         
-def run_all_section_block_evaluations(policy_text):
-    blocks = break_into_blocks(policy_text)
-    all_results = []
-    
-    for section_id in dpdpa_checklists:
-        for i, block_text in enumerate(blocks):
-            block_id = f"BLOCK{i+1}"
-            result = analyze_block_against_section(section_id, block_text, block_id)
-            if result:
-                all_results.append(result)
-    
-    return all_results
+def update_compiled_output(compiledOutput, gpt_result):
+    for evaluation in gpt_result["evaluations"]:
+        checklist_id = evaluation["checklist_id"]
+        status = evaluation["status"]
+        sentence = evaluation["matched_sentence"]
+        justification = evaluation["justification"]
 
-def aggregate_checklist_summary(gpt_outputs):
-    summary = {}
+        # Only add Explicitly/Partially Mentioned
+        if status in ["Explicitly Mentioned", "Partially Mentioned"]:
+            formatted = (
+                f"{sentence} matches this checklist item because {justification} "
+                f"({status})"
+            )
 
-    # Create lookup for checklist item text
-    checklist_lookup = {
-        item["id"]: item["text"]
-        for section in dpdpa_checklists.values()
-        for item in section["items"]
-    }
+            # Find or create entry in compiledOutput
+            found = False
+            for entry in compiledOutput:
+                if entry["checklist_id"] == checklist_id:
+                    entry["Match-justification mapping list"].append(formatted)
+                    found = True
+                    break
 
-    for result in gpt_outputs:
-        block_id = result["BlockID"]
-        block_text = result["Block"]
+            if not found:
+                compiledOutput.append({
+                    "checklist_id": checklist_id,
+                    "Match-justification mapping list": [formatted]
+                })
+                
+def generate_final_summary(compiledOutput, checklist_ids):
+    final_summary = []
 
-        for eval in result["Checklist Evaluation"]:
-            cid = eval["Checklist Item ID"]
-            status = eval["Status"]
-            sentence = eval["Matched Sentence"]
-            justification = eval["Justification"]
+    for cid in checklist_ids:
+        # Find if this checklist_id exists in compiledOutput
+        entry = next((e for e in compiledOutput if e["checklist_id"] == cid), None)
 
-            if cid not in summary:
-                summary[cid] = {
-                    "Checklist Text": checklist_lookup.get(cid, ""),
-                    "Checklist Item ID": cid,
-                    "Matched In": [],
-                    "Matched Sentences": [],
-                    "Justifications": {
-                        "Explicitly Mentioned": [],
-                        "Partially Mentioned": [],
-                        "Missing": []
-                    },
-                    "Coverage": "Missing",
-                    "Confidence Score": 0.0
-                }
+        if entry:
+            matches = entry["Match-justification mapping list"]
+            has_explicit = any("(Explicitly Mentioned)" in m for m in matches)
+            has_partial = any("(Partially Mentioned)" in m for m in matches)
 
-            if status == "Explicitly Mentioned":
-                summary[cid]["Matched In"].append(block_id)
-                if sentence:
-                    summary[cid]["Matched Sentences"].append(sentence)
-                summary[cid]["Justifications"]["Explicitly Mentioned"].append(
-                    f"**Matched Sentence:** \"{sentence}\"\n**Justification:** {justification}"
-                )
-
-            elif status == "Partially Mentioned":
-                summary[cid]["Matched In"].append(block_id)
-                if sentence:
-                    summary[cid]["Matched Sentences"].append(sentence)
-                summary[cid]["Justifications"]["Partially Mentioned"].append(
-                    f"**Matched Sentence:** \"{sentence}\"\n**Justification:** {justification}"
-                )
-
-            elif status == "Missing":
-                summary[cid]["Justifications"]["Missing"].append(
-                    f"**No sentence matched.**\n**Justification:** {justification}"
-                )
-
-    # Final classification and capping
-    for cid, item in summary.items():
-        num_explicit = len(item["Justifications"]["Explicitly Mentioned"])
-        num_partial = len(item["Justifications"]["Partially Mentioned"])
-
-        if num_explicit > 0:
-            item["Coverage"] = "Explicitly Mentioned"
-            item["Confidence Score"] = 1.0
-        elif num_partial > 0:
-            item["Coverage"] = "Partially Mentioned"
-            item["Confidence Score"] = 0.5
+            if has_explicit:
+                coverage = "Explicitly Mentioned"
+                score = 1.0
+            elif has_partial:
+                coverage = "Partially Mentioned"
+                score = 0.5
+            else:
+                coverage = "Missing"
+                score = 0.0
         else:
-            item["Coverage"] = "Missing"
-            item["Confidence Score"] = 0.0
+            # Completely missing
+            matches = []
+            coverage = "Missing"
+            score = 0.0
 
-        # Cap justifications
-        for k in item["Justifications"]:
-            if len(item["Justifications"][k]) > 5:
-                item["Justifications"][k] = item["Justifications"][k][:5] + [
-                    f"...and {len(item['Justifications'][k]) - 5} more"
-                ]
+        final_summary.append({
+            "checklist_id": cid,
+            "coverage": coverage,
+            "confidence_score": score,
+            "matches": matches
+        })
 
-    return summary
+    return final_summary
+
 
 def set_custom_css():
     st.markdown("""
@@ -589,85 +485,74 @@ elif menu == "Policy Compliance Checker":
     section_options = [f"{sid} — {dpdpa_checklists[sid]['title']}" for sid in dpdpa_checklists] + ["All Sections"]
     section_id = st.selectbox("Choose DPDPA Section", section_options)
     section_key = section_id.split(" — ")[0] if " — " in section_id else section_id
-
-
-
+    
+    # Run
     st.markdown("<h3 style='font-size:24px; font-weight:700;'>4. Run Compliance Check</h3>", unsafe_allow_html=True)
     if st.button("Run Compliance Check"):
-        if policy_text:
-            with st.spinner("🧠 Running GPT analysis..."):
-                raw_blocks = break_into_blocks(policy_text)
-                blocks = [b for b in raw_blocks if is_valid_block(b)]
-                st.markdown(f"✅ Detected **{len(blocks)}** valid blocks for evaluation, filter applied")
-                with st.expander("📄 Preview: Blocks being sent to GPT", expanded=False):
-                    for i, block in enumerate(blocks):
-                        st.markdown(f"**BLOCK{i+1}:**")
-                        st.markdown(block)
-                        st.markdown("---")
-
-                st.markdown("### ⚙️ Evaluation Settings")
-                st.markdown(f"- **Selected Section:** {section_id}")
-                if industry == "Other" and custom_industry:
-                    st.markdown(f"- **Industry Context:** {custom_industry}")
-                else:
-                    st.markdown(f"- **Industry Context:** {industry}")
-                st.markdown("---")
-                gpt_outputs = []
-    
-                # ✅ IF: All Sections
-                if section_key == "All Sections":
-                    st.markdown("#### 📘 Running for **All Sections**")
-                    for sid in dpdpa_checklists:
-                        st.markdown(f"### 🔍 Section {sid}: {dpdpa_checklists[sid]['title']}")
-                        for i, block_text in enumerate(blocks):
-                            block_id = f"BLOCK{i+1}"
-                            result = analyze_block_against_section(sid, block_text, block_id)
-                            if result:
-                                gpt_outputs.append(result)
-    
-                # ✅ ELIF: One selected section
-                else:
-                    st.markdown(f"#### 📘 Running for **Section {section_key}: {dpdpa_checklists[section_key]['title']}**")
-                    for i, block_text in enumerate(blocks):
-                        block_id = f"BLOCK{i+1}"
-                        result = analyze_block_against_section(section_key, block_text, block_id)
-                        if result:
-                            gpt_outputs.append(result)
-    
-                # ✅ Final Aggregation
-                st.success("✅ GPT evaluation complete. Merging results...")
-                checklist_summary = aggregate_checklist_summary(gpt_outputs)
-    
-                st.markdown("### 📋 Final Checklist Coverage")
-                for cid, item in checklist_summary.items():
-                    coverage = item["Coverage"]
-                    color = {
-                        "Explicitly Mentioned": "#198754",
-                        "Partially Mentioned": "#FFC107",
-                        "Missing": "#DC3545"
-                    }.get(coverage, "#6c757d")
-                
-                    st.markdown(f"""
-                    <div style="margin-bottom:12px;">
-                        <strong>{cid} — {item['Checklist Text']}</strong><br>
-                        <span style="color:white;background-color:{color};padding:3px 10px;border-radius:6px;font-size:13px;">{coverage}</span>
-                        <span style="margin-left:10px;">Confidence Score: {item['Confidence Score']}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                    if item['Matched Sentences']:
-                        with st.expander("📌 Matched Sentences"):
-                            for s in item['Matched Sentences'][:5]:
-                                st.markdown(f"> {s}")
-                            if len(item['Matched Sentences']) > 5:
-                                st.markdown(f"_...and {len(item['Matched Sentences']) - 5} more_")
-                
-                    coverage_justifications = item["Justifications"].get(item["Coverage"], [])
-                    if coverage_justifications:
-                        with st.expander("🧾 Justifications"):
-                            for j in coverage_justifications:
-                                st.markdown(f"- {j}")
-                
+        with st.spinner("🧠 Running GPT analysis..."):
+            raw_blocks = break_into_blocks(policy_text)
+            blocks = [b for b in raw_blocks if is_valid_block(b["text"])]
+            st.markdown(f"✅ Detected **{len(blocks)}** valid blocks for evaluation.")
+            with st.expander("📄 Preview: Blocks being sent to GPT", expanded=False):
+                for block in blocks:
+                    st.markdown(f"**{block['block_id']}:**")
+                    st.markdown(block["text"])
                     st.markdown("---")
+    
+            st.markdown("### ⚙️ Evaluation Settings")
+            st.markdown(f"- **Selected Section:** {section_id}")
+            st.markdown(f"- **Industry Context:** General")
+            st.markdown("---")
+    
+            compiledOutput = []
+    
+            if section_key == "All Sections":
+                st.markdown("#### 📘 Running for **All Sections**")
+                for sid in dpdpa_checklists:
+                    st.markdown(f"### 🔍 Section {sid}: {dpdpa_checklists[sid]['title']}")
+                    checklist_items = dpdpa_checklists[sid]["items"]
+                    checklist_ids = [item["id"] for item in checklist_items]
+                    for block in blocks:
+                        result = analyze_block_against_section(sid, block, checklist_items, client)
+                        if result:
+                            update_compiled_output(compiledOutput, result)
+                final_summary = generate_final_summary(compiledOutput, checklist_ids)
+            else:
+                st.markdown(f"#### 📘 Running for **Section {section_key}: {dpdpa_checklists[section_key]['title']}**")
+                checklist_items = dpdpa_checklists[section_key]["items"]
+                checklist_ids = [item["id"] for item in checklist_items]
+                for block in blocks:
+                    result = analyze_block_against_section(section_key, block, checklist_items, client)
+                    if result:
+                        update_compiled_output(compiledOutput, result)
+                final_summary = generate_final_summary(compiledOutput, checklist_ids)
+    
+            st.success("✅ GPT evaluation complete. Displaying results...")
+    
+            st.markdown("### 📋 Final Checklist Coverage")
+            for item in final_summary:
+                coverage = item["coverage"]
+                color = {
+                    "Explicitly Mentioned": "#198754",
+                    "Partially Mentioned": "#FFC107",
+                    "Missing": "#DC3545"
+                }.get(coverage, "#6c757d")
+    
+                st.markdown(f"""
+                <div style="margin-bottom:12px;">
+                    <strong>{item['checklist_id']}</strong><br>
+                    <span style="color:white;background-color:{color};padding:3px 10px;border-radius:6px;font-size:13px;">{coverage}</span>
+                    <span style="margin-left:10px;">Confidence Score: {item['confidence_score']}</span>
+                </div>
+                """, unsafe_allow_html=True)
+    
+                if item["matches"]:
+                    with st.expander("📌 Matches & Justifications"):
+                        for m in item["matches"]:
+                            st.markdown(f"> {m}")
+                else:
+                    st.markdown("*No matches found.*")
+    
+                st.markdown("---")
 
 
