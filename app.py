@@ -121,6 +121,15 @@ def extract_text_from_pdf(pdf_file):
     doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
     return "\n".join(page.get_text() for page in doc)
 
+def is_valid_block(text):
+    text = text.strip()
+
+    # 1. Must be at least 10 words
+    if len(text.split()) < 8:
+        return False
+
+    return True
+
 # --- Prompt Generator ---
 def create_block_prompt(section_id, block_text, checklist, block_id):
     checklist_text = "\n".join(
@@ -587,8 +596,9 @@ elif menu == "Policy Compliance Checker":
     if st.button("Run Compliance Check"):
         if policy_text:
             with st.spinner("🧠 Running GPT analysis..."):
-                blocks = break_into_blocks(policy_text)
-                st.markdown(f"✅ Detected **{len(blocks)} blocks** for evaluation.")
+                raw_blocks = break_into_blocks(policy_text)
+                blocks = [b for b in raw_blocks if is_valid_block(b)]
+                st.markdown(f"✅ Detected **{len(blocks)}** valid blocks for evaluation.")
                 st.markdown("### ⚙️ Evaluation Settings")
                 st.markdown(f"- **Selected Section:** {section_id}")
                 st.markdown(f"- **Number of Policy Blocks:** {len(blocks)}")
