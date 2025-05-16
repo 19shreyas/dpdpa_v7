@@ -506,19 +506,17 @@ elif menu == "Policy Compliance Checker":
     st.markdown("<h3 style='font-size:24px; font-weight:700;'>4. Run Compliance Check</h3>", unsafe_allow_html=True)
     if st.button("Run Compliance Check"):
         if policy_text:
-            st.markdown("### ⚙️ Evaluation Settings")
-            st.markdown(f"- **Selected Section:** {section_id}")
-            st.markdown(f"- **Number of Policy Blocks:** {len(blocks)}")
-            if industry == "Other" and custom_industry:
-                st.markdown(f"- **Industry Context:** {custom_industry}")
-            else:
-                st.markdown(f"- **Industry Context:** {industry}")
-            st.markdown("---")
-
             with st.spinner("🧠 Running GPT analysis..."):
                 blocks = break_into_blocks(policy_text)
                 st.markdown(f"✅ Detected **{len(blocks)} blocks** for evaluation.")
-    
+                st.markdown("### ⚙️ Evaluation Settings")
+                st.markdown(f"- **Selected Section:** {section_id}")
+                st.markdown(f"- **Number of Policy Blocks:** {len(blocks)}")
+                if industry == "Other" and custom_industry:
+                    st.markdown(f"- **Industry Context:** {custom_industry}")
+                else:
+                    st.markdown(f"- **Industry Context:** {industry}")
+                st.markdown("---")
                 gpt_outputs = []
     
                 # ✅ IF: All Sections
