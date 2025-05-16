@@ -219,12 +219,15 @@ def run_all_section_block_evaluations(policy_text):
 def aggregate_checklist_summary(gpt_outputs):
     summary = {}
 
-    # Create a reverse lookup for checklist item text
+    # Lookup for checklist item text
     checklist_lookup = {
         item["id"]: item["text"]
         for section in dpdpa_checklists.values()
         for item in section["items"]
     }
+
+    # Temp store to track all block-level status for cleanup
+    status_tracker = {}
 
     for result in gpt_outputs:
         for item in result["Checklist Evaluation"]:
@@ -241,9 +244,12 @@ def aggregate_checklist_summary(gpt_outputs):
                     "Matched In": [],
                     "Matched Sentences": [],
                     "Justifications": [],
-                    "Rewrite Suggestion": None,
                     "Confidence Score": 0.0
                 }
+                status_tracker[cid] = []
+
+            # Track status from each block for final cleanup
+            status_tracker[cid].append(status)
 
             if status == "Explicitly Mentioned":
                 summary[cid]["Coverage"] = "Explicitly Mentioned"
@@ -252,15 +258,32 @@ def aggregate_checklist_summary(gpt_outputs):
                 summary[cid]["Matched Sentences"].append(sentence)
                 summary[cid]["Justifications"].append(justification)
 
-            elif status == "Partially Mentioned" and summary[cid]["Coverage"] != "Explicitly Mentioned":
-                summary[cid]["Coverage"] = "Partially Mentioned"
-                summary[cid]["Confidence Score"] = max(0.5, summary[cid]["Confidence Score"])
-                summary[cid]["Matched In"].append(block_id)
-                summary[cid]["Matched Sentences"].append(sentence)
-                summary[cid]["Justifications"].append(justification)
+            elif status == "Partially Mentioned":
+                if summary[cid]["Coverage"] != "Explicitly Mentioned":
+                    summary[cid]["Coverage"] = "Partially Mentioned"
+                    summary[cid]["Confidence Score"] = max(0.5, summary[cid]["Confidence Score"])
+                    summary[cid]["Matched In"].append(block_id)
+                    summary[cid]["Matched Sentences"].append(sentence)
+                    summary[cid]["Justifications"].append(justification)
 
             elif status == "Missing":
                 summary[cid]["Justifications"].append(justification)
+
+    # Fix: Clean up contradictions in justifications if Explicitly Mentioned
+    for cid, item in summary.items():
+        if item["Coverage"] == "Explicitly Mentioned":
+            matched_just_count = len(item["Matched Sentences"])
+            item["Justifications"] = item["Justifications"][:matched_just_count]
+            if matched_just_count > 5:
+                item["Justifications"].append(f"...and {matched_just_count - 5} more")
+
+        elif item["Coverage"] == "Partially Mentioned":
+            if len(item["Justifications"]) > 5:
+                item["Justifications"] = item["Justifications"][:5] + [f"...and {len(item['Justifications']) - 5} more"]
+
+        elif item["Coverage"] == "Missing":
+            if len(item["Justifications"]) > 5:
+                item["Justifications"] = item["Justifications"][:5] + [f"...and {len(item['Justifications']) - 5} more"]
 
     return summary
 
