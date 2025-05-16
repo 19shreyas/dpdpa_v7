@@ -530,6 +530,8 @@ elif menu == "Policy Compliance Checker":
             st.success("✅ GPT evaluation complete. Displaying results...")
     
             st.markdown("### 📋 Final Checklist Coverage")
+            st.write("DEBUG: Final Summary Output", final_summary)
+
             for item in final_summary:
                 coverage = item["coverage"]
                 color = {
