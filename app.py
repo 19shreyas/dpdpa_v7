@@ -122,39 +122,53 @@ def extract_text_from_pdf(pdf_file):
     return "\n".join(page.get_text() for page in doc)
 
 # --- Prompt Generator ---
-def create_block_prompt(section_id, block_text, checklist):
+def create_block_prompt(section_id, block_text, checklist, block_id):
     checklist_text = "\n".join(
         f"{item['id']}. {item['text']}" for item in checklist
     )
 
-    return f"""
-You are a compliance analyst evaluating whether the following privacy policy block meets DPDPA Section {section_id}: {dpdpa_checklists[section_id]['title']}.
+    # Escape block text safely for GPT prompt
+    block_text_escaped = json.dumps(block_text)
 
-**Checklist:** Use the item numbers (e.g., 4.1, 4.2...) from the checklist below in your response. Do not rephrase or modify the checklist items. Evaluate strictly based on the original items.
-
-{checklist_text}
-
-**Policy Block:**
-{block_text}
-
-Evaluate each checklist item as: Explicitly Mentioned / Partially Mentioned / Missing.
-
-Return output in this JSON format:
-{{
-  "Checklist Evaluation": [
+    prompt = f"""
+    You are a compliance analyst evaluating whether the following privacy policy block meets the obligations under Section {section_id} of the Digital Personal Data Protection Act (DPDPA), 2023.
+    
+    Section Title: {dpdpa_checklists[section_id]['title']}
+    
+    **Checklist:**
+    Evaluate the block against each item in the checklist below:
+    
+    {checklist_text}
+    
+    **Policy Block (Block ID: {block_id}):**
+    {block_text_escaped}
+    
+    For each checklist item, return:
+    - Checklist Item ID
+    - Status: Explicitly Mentioned / Partially Mentioned / Missing
+    - Matched Sentence(s) from the block (verbatim)
+    - Justification for why you marked it so
+    
+    Return output in this exact JSON format:
     {{
-      "Checklist Item ID": "4.1",
-      "Status": "Explicitly Mentioned",
-      "Justification": "..."
-    }},
-    ...
-  ],
-  "Match Level": "Fully Compliant / Partially Compliant / Non-Compliant",
-  "Compliance Score": 0.0,
-  "Suggested Rewrite": "...",
-  "Simplified Legal Meaning": "..."
-}}
-"""
+      "Section ID": "{section_id}",
+      "Section Title": "{dpdpa_checklists[section_id]['title']}",
+      "BlockID": "{block_id}",
+      "Block": {block_text_escaped},
+      "Checklist Evaluation": [
+        {{
+          "Checklist Item ID": "6.1",
+          "Status": "Explicitly Mentioned",
+          "Matched Sentence": "...",
+          "Justification": "..."
+        }}
+        // include all checklist items, even if Missing
+      ],
+      "Match Level": "Partially Compliant",
+      "Compliance Score": 0.4
+    }}
+    """
+    return prompt.strip()
 
 # --- GPT Call ---
 def call_gpt(prompt):
