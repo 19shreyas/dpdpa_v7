@@ -576,8 +576,28 @@ elif menu == "Policy Compliance Checker":
     st.markdown("<h3 style='font-size:24px; font-weight:700;'>4. Run Compliance Check</h3>", unsafe_allow_html=True)
     if st.button("Run Compliance Check"):
         if policy_text:
-            with st.spinner("Running GPT-based compliance evaluation..."):
-                gpt_outputs = run_all_section_block_evaluations(policy_text)
+            with st.spinner("🧠 Analyzing your privacy policy block-by-block..."):
+                st.markdown("#### 🔄 Step 1: Splitting the policy into blocks...")
+                blocks = break_into_blocks(policy_text)
+                st.markdown(f"✅ Detected **{len(blocks)} blocks** for analysis.")
+            
+                st.markdown("#### 🔍 Step 2: Evaluating each block against all DPDPA sections...")
+                gpt_outputs = []
+                for section_id in dpdpa_checklists:
+                    section_title = dpdpa_checklists[section_id]["title"]
+                    st.markdown(f"##### 📚 Section {section_id}: {section_title}")
+                    
+                    for i, block_text in enumerate(blocks):
+                        block_id = f"BLOCK{i+1}"
+                        st.markdown(f"- Analyzing **{block_id}** ...", unsafe_allow_html=True)
+                        result = analyze_block_against_section(section_id, block_text, block_id)
+                        if result:
+                            gpt_outputs.append(result)
+            
+                st.success("✅ GPT evaluation complete. Merging results...")
+                checklist_summary = aggregate_checklist_summary(gpt_outputs)
+                st.success("✅ Final checklist summary ready.")
+
                 checklist_summary = aggregate_checklist_summary(gpt_outputs)
     
                 # Show a success message
