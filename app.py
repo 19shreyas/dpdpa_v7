@@ -277,6 +277,7 @@ def aggregate_checklist_summary(gpt_outputs):
 
     for result in gpt_outputs:
         block_id = result["BlockID"]
+        block_text = result["Block"]
 
         for eval in result["Checklist Evaluation"]:
             cid = eval["Checklist Item ID"]
@@ -301,24 +302,26 @@ def aggregate_checklist_summary(gpt_outputs):
 
             if status == "Explicitly Mentioned":
                 summary[cid]["Matched In"].append(block_id)
-                summary[cid]["Matched Sentences"].append(sentence)
+                if sentence:
+                    summary[cid]["Matched Sentences"].append(sentence)
                 summary[cid]["Justifications"]["Explicitly Mentioned"].append(
-                    f"[{block_id}] {justification}"
+                    f"**Matched Sentence:** \"{sentence}\"\n**Justification:** {justification}"
                 )
 
             elif status == "Partially Mentioned":
                 summary[cid]["Matched In"].append(block_id)
-                summary[cid]["Matched Sentences"].append(sentence)
+                if sentence:
+                    summary[cid]["Matched Sentences"].append(sentence)
                 summary[cid]["Justifications"]["Partially Mentioned"].append(
-                    f"[{block_id}] {justification}"
+                    f"**Matched Sentence:** \"{sentence}\"\n**Justification:** {justification}"
                 )
 
             elif status == "Missing":
                 summary[cid]["Justifications"]["Missing"].append(
-                    f"[{block_id}] {justification}"
+                    f"**No sentence matched.**\n**Justification:** {justification}"
                 )
 
-    # Final classification
+    # Final classification and capping
     for cid, item in summary.items():
         num_explicit = len(item["Justifications"]["Explicitly Mentioned"])
         num_partial = len(item["Justifications"]["Partially Mentioned"])
@@ -333,7 +336,7 @@ def aggregate_checklist_summary(gpt_outputs):
             item["Coverage"] = "Missing"
             item["Confidence Score"] = 0.0
 
-        # Cap justifications to max 5 (per type)
+        # Cap justifications
         for k in item["Justifications"]:
             if len(item["Justifications"][k]) > 5:
                 item["Justifications"][k] = item["Justifications"][k][:5] + [
