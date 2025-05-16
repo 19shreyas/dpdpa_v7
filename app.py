@@ -181,7 +181,7 @@ def analyze_block_against_section(section_id, block, checklist_items, client):
         }
 
     except Exception as e:
-        print(f"GPT error on block {block['block_id']}: {e}")
+        st.error(f"❌ GPT error on {block['block_id']}: {e}")
         return None
 
         
