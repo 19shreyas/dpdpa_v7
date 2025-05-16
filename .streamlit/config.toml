@@ -1,0 +1,7 @@
+[theme]
+base="dark"  # or "light" if you prefer
+primaryColor="#1a9afb"       # EY Blue (buttons, highlights)
+backgroundColor="#FFFFFF"    # Charcoal Black (main background)
+secondaryBackgroundColor="#2e2e38"  # Darker shade for cards
+textColor="#fafafa"          # White text
+font="sans serif"            # Clean, modern font
