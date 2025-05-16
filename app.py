@@ -491,7 +491,8 @@ elif menu == "Policy Compliance Checker":
     if st.button("Run Compliance Check"):
         with st.spinner("🧠 Running GPT analysis..."):
             raw_blocks = break_into_blocks(policy_text)
-            blocks = [b for b in raw_blocks if is_valid_block(b["text"])]
+            # blocks = [b for b in raw_blocks if is_valid_block(b["text"])]
+            blocks = [{"block_id": f"BLOCK{i+1}", "text": b} for i, b in enumerate(raw_blocks) if is_valid_block(b)]
             st.markdown(f"✅ Detected **{len(blocks)}** valid blocks for evaluation.")
             with st.expander("📄 Preview: Blocks being sent to GPT", expanded=False):
                 for block in blocks:
