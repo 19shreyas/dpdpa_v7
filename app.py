@@ -599,6 +599,12 @@ elif menu == "Policy Compliance Checker":
                 raw_blocks = break_into_blocks(policy_text)
                 blocks = [b for b in raw_blocks if is_valid_block(b)]
                 st.markdown(f"✅ Detected **{len(blocks)}** valid blocks for evaluation, filter applied")
+                with st.expander("📄 Preview: Blocks being sent to GPT", expanded=False):
+                    for i, block in enumerate(blocks):
+                        st.markdown(f"**BLOCK{i+1}:**")
+                        st.markdown(block)
+                        st.markdown("---")
+
                 st.markdown("### ⚙️ Evaluation Settings")
                 st.markdown(f"- **Selected Section:** {section_id}")
                 if industry == "Other" and custom_industry:
