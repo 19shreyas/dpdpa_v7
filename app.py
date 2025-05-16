@@ -497,42 +497,47 @@ elif menu == "Policy Compliance Checker":
         custom_industry = None
 
     st.markdown("<h3 style='font-size:24px; font-weight:700;'>3. Choose DPDPA Section</h3>", unsafe_allow_html=True)
-    # section_options = list(dpdpa_checklists.keys()) + ["All Sections"]
     section_options = [f"{sid} — {dpdpa_checklists[sid]['title']}" for sid in dpdpa_checklists] + ["All Sections"]
-    section_id = st.selectbox("", options=section_options)
+    section_id = st.selectbox("Choose DPDPA Section", section_options)
+    section_key = section_id.split(" — ")[0] if " — " in section_id else section_id
+
+
 
     st.markdown("<h3 style='font-size:24px; font-weight:700;'>4. Run Compliance Check</h3>", unsafe_allow_html=True)
     if st.button("Run Compliance Check"):
         if policy_text:
-            with st.spinner("🧠 Analyzing your privacy policy block-by-block..."):
-                st.markdown("#### 🔄 Step 1: Splitting the policy into blocks...")
+            with st.spinner("🧠 Running GPT analysis..."):
                 blocks = break_into_blocks(policy_text)
-                st.markdown(f"✅ Detected **{len(blocks)} blocks** for analysis.")
-            
-                st.markdown("#### 🔍 Step 2: Evaluating each block against all DPDPA sections...")
+                st.markdown(f"✅ Detected **{len(blocks)} blocks** for evaluation.")
+    
                 gpt_outputs = []
-                for section_id in dpdpa_checklists:
-                    section_title = dpdpa_checklists[section_id]["title"]
-                    st.markdown(f"##### 📚 Section {section_id}: {section_title}")
-                    
+    
+                # ✅ IF: All Sections
+                if section_key == "All Sections":
+                    st.markdown("#### 📘 Running for **All Sections**")
+                    for sid in dpdpa_checklists:
+                        st.markdown(f"### 🔍 Section {sid}: {dpdpa_checklists[sid]['title']}")
+                        for i, block_text in enumerate(blocks):
+                            block_id = f"BLOCK{i+1}"
+                            result = analyze_block_against_section(sid, block_text, block_id)
+                            if result:
+                                gpt_outputs.append(result)
+    
+                # ✅ ELIF: One selected section
+                else:
+                    st.markdown(f"#### 📘 Running for **Section {section_key}: {dpdpa_checklists[section_key]['title']}**")
                     for i, block_text in enumerate(blocks):
                         block_id = f"BLOCK{i+1}"
-                        st.markdown(f"- Analyzing **{block_id}** ...", unsafe_allow_html=True)
-                        result = analyze_block_against_section(section_id, block_text, block_id)
+                        result = analyze_block_against_section(section_key, block_text, block_id)
                         if result:
                             gpt_outputs.append(result)
-            
+    
+                # ✅ Final Aggregation
                 st.success("✅ GPT evaluation complete. Merging results...")
                 checklist_summary = aggregate_checklist_summary(gpt_outputs)
-                st.success("✅ Final checklist summary ready.")
-
-                checklist_summary = aggregate_checklist_summary(gpt_outputs)
     
-                # Show a success message
-                st.success("✅ Compliance check completed.")
-    
-                # Preview summary
-                st.markdown("### ✅ Final Checklist Summary")
+                # ✅ Display output
+                st.markdown("### 📋 Final Checklist Coverage")
                 for cid, item in checklist_summary.items():
                     st.markdown(f"**{cid} — {item['Checklist Text']}**")
                     st.markdown(f"- **Coverage:** {item['Coverage']}")
@@ -548,3 +553,4 @@ elif menu == "Policy Compliance Checker":
                         for j in item['Justifications']:
                             st.markdown(f"- {j}")
                     st.markdown("---")
+
