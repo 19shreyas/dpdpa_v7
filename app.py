@@ -226,7 +226,7 @@ def analyze_policy_section(section_id, checklist, policy_text, model="gpt-4"):
 
 def render_slide(section_data):
     #with open("template_full.html", "r") as file:
-    with open("template_16_9.html", "r") as file:
+    with open("template_1920x1080p.html", "r") as file:
         template = Template(file.read())
 
     counts = {"Missing": 0, "Partially Mentioned": 0, "Explicitly Mentioned": 0}
