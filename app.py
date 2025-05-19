@@ -225,7 +225,8 @@ def analyze_policy_section(section_id, checklist, policy_text, model="gpt-4"):
     }
 
 def render_slide(section_data):
-    with open("template_full.html", "r") as file:
+    #with open("template_full.html", "r") as file:
+    with open("template_16_9.html", "r") as file:
         template = Template(file.read())
 
     counts = {"Missing": 0, "Partially Mentioned": 0, "Explicitly Mentioned": 0}
@@ -1230,5 +1231,6 @@ elif menu == "Policy Compliance Checker":
                         # section_data = result of your compliance checker for one section
                         section_data = json.loads(json_str)  # ✅ Convert string to dict
                         html = render_slide(section_data)
-                        components.html(html, height=1200, scrolling=True)
+                        #components.html(html, height=1200, scrolling=True)
+                        components.html(html, height=720, width=1280, scrolling=False)
 
