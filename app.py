@@ -1228,6 +1228,7 @@ elif menu == "Policy Compliance Checker":
                             mime="text/csv"
                         )
                         # section_data = result of your compliance checker for one section
-                        html = render_slide(json_str)
+                        section_data = json.loads(json_str)  # ✅ Convert string to dict
+                        html = render_slide(section_data)
                         components.html(html, height=1200, scrolling=True)
 
