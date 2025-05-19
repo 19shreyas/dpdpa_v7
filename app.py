@@ -4,6 +4,9 @@ import json
 import pandas as pd
 import re
 import fitz
+import io
+import datetime
+from docx import Document              
 
 # --- OpenAI Setup ---
 api_key = st.secrets["OPENAI_API_KEY"]
@@ -97,200 +100,127 @@ dpdpa_checklists = {
     }
 }
 
-# --- Block Splitter ---
-def break_into_blocks(text):
-    lines = text.splitlines()
-    blocks, current_block = [], []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if re.match(r'^([A-Z][A-Za-z\s]+|[0-9]+\.\s.*)$', stripped):
-            if current_block:
-                blocks.append(' '.join(current_block).strip())
-                current_block = []
-            current_block.append(stripped)
-        else:
-            current_block.append(stripped)
-    if current_block:
-        blocks.append(' '.join(current_block).strip())
-    return blocks
-
 # --- PDF Extractor ---
 def extract_text_from_pdf(pdf_file):
     doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
     return "\n".join(page.get_text() for page in doc)
 
-def is_valid_block(text):
-    text = text.strip()
-    # 1. Must be at least 10 words
-    if len(text.split()) < 8:
-        return False
-
-    return True
-
 # --- Prompt Generator ---
-def build_prompt(block_text, checklist_items, section_title):
-    prompt = f"""You are evaluating a Privacy Policy block against Section {section_title} of the Digital Personal Data Protection Act, 2023 (DPDPA).
+def create_full_policy_prompt(section_id, full_policy_text, checklist):
+    checklist_text = "\n".join(
+        f"{item['id']}. {item['text']}" for item in checklist
+    )
 
-    The goal is to check compliance **for each checklist item below**. For each item, you must return:
-    1. The match **status**: "Explicitly Mentioned", "Partially Mentioned", or "Missing".
-    2. A **matched sentence** from the block (if any).
-    3. A short **justification** that clearly explains why it was marked that way.
+    return f"""
+    You are a compliance analyst evaluating whether the following full privacy policy meets DPDPA Section {section_id}: {dpdpa_checklists[section_id]['title']}.
     
-    ONLY mark a sentence as:
-    - **Explicitly Mentioned** if it uses **clear and direct language** fulfilling the legal clause.
-    - **Partially Mentioned** if the intent is **implied AND relevant**, but the language is vague, incomplete, or not legally aligned.
-    - **Missing** if the clause is **not addressed at all**, or is **addressed in an unrelated context** (e.g., internal IT access, generic marketing, etc.).
+    **Checklist:** Use the item numbers (e.g., 4.1, 4.2...) from the checklist below in your response. Do not rephrase or modify the checklist items. Evaluate strictly based on the original items.
     
-    Checklist Items:
-    {json.dumps(checklist_items, indent=2)}
+    {checklist_text}
     
-    Policy Block:
-    \"\"\"
-    {block_text}
-    \"\"\"
+    **Full Policy Text:**
+    {full_policy_text}
     
-    Your response must be a JSON object like this:
+    Instructions:
+    For each checklist item, search anywhere in the policy and classify it as:
+    - Explicitly Mentioned
+    - Partially Mentioned
+    - Missing
+    
+    Return output in this JSON format only:
     {{
-      "block_id": "BLOCKX",
-      "section_id": "{section_title.split(' ')[0]}",
-      "evaluations": [
+      "Checklist Evaluation": [
         {{
-          "checklist_id": "...",
-          "status": "...",
-          "matched_sentence": "...(exact matching sentence from the block)",
-          "justification": "..."
+          "Checklist Item ID": "4.1",
+          "Status": "Explicitly Mentioned",
+          "Justification": "..."
         }},
         ...
-      ]
+      ],
+      "Match Level": "Fully Compliant / Partially Compliant / Non-Compliant",
+      "Compliance Score": 0.0,
+      "Suggested Rewrite": "...",
+      "Simplified Legal Meaning": "..."
     }}
     
-    Important Rules:
-    - Do NOT invent sentences. Only quote sentences that actually appear in the block.
-    - If the checklist item is about **consent of Data Principal**, exclude lines about employee access, contractors, etc.
-    - If the checklist item is about **lawful purpose**, ensure it mentions legality clearly. "Better services" is NOT enough.
-    - If any matched sentence is vague, choose **'Partially Mentioned'** or **'Missing'**, not Explicit.
-    
-    Only output the JSON object. Do not include explanations or commentary."""
-    return prompt
-
-
+    Only return the JSON object. Do not include any commentary or explanation.
+    """
 # --- GPT Call ---
-import json
-import re
-import streamlit as st
+def call_gpt(prompt, model="gpt-4"):
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0
+    )
+    return json.loads(response.choices[0].message.content)
+    
+def call_gpt_text(prompt, model="gpt-4"):
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5
+    )
+    return response.choices[0].message.content.strip()
 
-def analyze_block_against_section(section_id, block, checklist_items, client):
+def analyze_policy_section(section_id, checklist, policy_text, model="gpt-4"):
+    prompt = create_full_policy_prompt(section_id, policy_text, checklist)
+    
     try:
-        prompt = build_prompt(section_id, checklist_items, block["text"])
-
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            temperature=0,
-            messages=[
-                {"role": "system", "content": "You are a legal compliance evaluator."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-
-        content = response.choices[0].message.content.strip()
-
-        # ✅ Show raw output for debugging
-        # st.write(f"🧾 GPT raw output for {block['block_id']}:")
-        # st.code(content)
-
-        # ✅ Case 1: Empty or not starting with JSON
-        if not content or "[" not in content:
-            st.warning(f"⚠️ GPT returned non-JSON output for {block['block_id']}")
-            st.code(content)
-            return None
-
-        # ✅ Case 2: Extract first JSON list using regex (in case GPT adds text)
-        json_match = re.search(r"\[\s*{.*?}\s*\]", content, re.DOTALL)
-        if not json_match:
-            st.warning(f"⚠️ Could not extract valid JSON from GPT response for {block['block_id']}")
-            st.code(content)
-            return None
-
-        evaluations = json.loads(json_match.group(0))
-
+        result = call_gpt(prompt, model=model)
+    except Exception as e:
         return {
-            "block_id": block["block_id"],
-            "section_id": section_id,
-            "evaluations": evaluations
+            "Section": section_id,
+            "Title": dpdpa_checklists[section_id]['title'],
+            "Error": str(e),
+            "Match Level": "Error",
+            "Compliance Score": 0.0,
+            "Matched Details": [],
+            "Checklist Items Matched": [],
+            "Suggested Rewrite": "",
+            "Simplified Legal Meaning": ""
         }
 
-    except Exception as e:
-        st.error(f"❌ GPT error on {block['block_id']}: {e}")
-        return None
+    checklist_dict = {item["id"]: item["text"] for item in checklist}
+    evaluations = []
 
+    matched_count = 0
+    partial_count = 0
 
-        
-def update_compiled_output(compiledOutput, gpt_result):
-    for evaluation in gpt_result["evaluations"]:
-        checklist_id = evaluation["checklist_id"]
-        status = evaluation["status"]
-        sentence = evaluation["matched_sentence"]
-        justification = evaluation["justification"]
+    for item in result.get("Checklist Evaluation", []):
+        item_id = item.get("Checklist Item ID", "").strip()
+        status = item.get("Status", "Missing").strip()
+        justification = item.get("Justification", "").strip()
+        text = checklist_dict.get(item_id, "❓")
 
-        # Only add Explicitly/Partially Mentioned
-        if status in ["Explicitly Mentioned", "Partially Mentioned"]:
-            formatted = (
-                f"{sentence} matches this checklist item because {justification} "
-                f"({status})"
-            )
+        if status == "Explicitly Mentioned":
+            matched_count += 1
+        elif status == "Partially Mentioned":
+            partial_count += 1
 
-            # Find or create entry in compiledOutput
-            found = False
-            for entry in compiledOutput:
-                if entry["checklist_id"] == checklist_id:
-                    entry["Match-justification mapping list"].append(formatted)
-                    found = True
-                    break
-
-            if not found:
-                compiledOutput.append({
-                    "checklist_id": checklist_id,
-                    "Match-justification mapping list": [formatted]
-                })
-                
-def generate_final_summary(compiledOutput, checklist_ids):
-    final_summary = []
-
-    for cid in checklist_ids:
-        # Find if this checklist_id exists in compiledOutput
-        entry = next((e for e in compiledOutput if e["checklist_id"] == cid), None)
-
-        if entry:
-            matches = entry["Match-justification mapping list"]
-            has_explicit = any("(Explicitly Mentioned)" in m for m in matches)
-            has_partial = any("(Partially Mentioned)" in m for m in matches)
-
-            if has_explicit:
-                coverage = "Explicitly Mentioned"
-                score = 1.0
-            elif has_partial:
-                coverage = "Partially Mentioned"
-                score = 0.5
-            else:
-                coverage = "Missing"
-                score = 0.0
-        else:
-            # Completely missing
-            matches = []
-            coverage = "Missing"
-            score = 0.0
-
-        final_summary.append({
-            "checklist_id": cid,
-            "coverage": coverage,
-            "confidence_score": score,
-            "matches": matches
+        evaluations.append({
+            "Checklist Item ID": item_id,
+            "Checklist Text": text,
+            "Status": status,
+            "Justification": justification
         })
 
-    return final_summary
+    score = (matched_count + 0.5 * partial_count) / len(checklist) if checklist else 0
+    level = (
+        "Fully Compliant" if score == 1 else
+        "Non-Compliant" if score == 0 else
+        "Partially Compliant"
+    )
 
+    return {
+        "Section": section_id,
+        "Title": dpdpa_checklists[section_id]['title'],
+        "Match Level": result.get("Match Level", level),
+        "Compliance Score": round(score, 2),
+        "Matched Details": evaluations,
+        "Checklist Items Matched": [f"{e['Checklist Item ID']} — {e['Checklist Text']}" for e in evaluations if e["Status"] in ["Explicitly Mentioned", "Partially Mentioned"]],
+        "Suggested Rewrite": result.get("Suggested Rewrite", ""),
+        "Simplified Legal Meaning": result.get("Simplified Legal Meaning", "")
+    }
 
 def set_custom_css():
     st.markdown("""
@@ -336,7 +266,6 @@ def set_custom_css():
         color: white !important;
     }
 
-
     /* Fix Browse files button text inside file uploader */
     .stFileUploader button,
     .stFileUploader label {
@@ -352,7 +281,6 @@ def set_custom_css():
         border-radius: 6px;
         border: none;
     }
-    
         
     /* Only for actual input and textarea fields */
     input, textarea {
@@ -368,7 +296,6 @@ def set_custom_css():
         color: #2E2E38 !important;
     }
 
-    
     /* For Streamlit selectboxes */
     div[data-baseweb="select"] {
         background-color: #2E2E38 !important;
@@ -460,31 +387,594 @@ elif menu == "Policy Generator":
         "GPT Draft Assistant", "Saved Drafts"])
 
     with tab1:
-        st.subheader("Full Policy Generator")
-        st.text_area("Enter your complete policy draft:", height=300)
-        st.button("Generate Suggestions with GPT")
+        st.markdown("### Generate a DPDPA-Compliant Policy")
+        st.caption("All fields marked with * are mandatory. This tool creates a draft policy aligned with India's Digital Personal Data Protection Act, 2023.")
+    
+        # --- Group 1: Organization Details ---
+        with st.expander("Organization Details", expanded=False):
+            st.markdown("**Policy Type***  \n_Select the kind of policy you are generating._")
+            policy_type = st.selectbox(" ", [
+                "-- Select Policy Type --", "Privacy Policy", "Retention Policy", "Security Policy", "Data Protection Policy"
+            ], key="policy_type")
+        
+            st.markdown("**Organization Name***  \n_Enter the full legal name of your organization._")
+            org_name = st.text_input(" ", key="org_name")
+        
+            st.markdown("**Sector***  \n_Select your sector or enter a custom one below._")
+            sector_dropdown = st.selectbox(" ", [
+                "-- Select Sector --", "Healthcare", "Finance", "Education", "Retail", "Government", "Technology", "Telecom"
+            ], key="sector_dropdown")
+            sector_custom = st.text_input("Custom sector (if not listed)", key="sector_custom")
+
+        # --- Group 2: Data Collection & Target Audience ---
+        with st.expander("Data Collection Details", expanded=False):
+            st.markdown("**Select Data Types Collected***  \n_Choose the categories of personal data you collect. Required under Sections 6 & 7._")
+            data_types_common = st.multiselect(" ", [
+                "Name", "Email", "Phone Number", "Biometric", "Health Records", "Location Data",
+                "Financial Information", "Browsing Data"
+            ], key="data_types_common")
+        
+            st.markdown("Custom data types (comma separated)")
+            data_types_custom = st.text_input(" ", key="data_types_custom")
+        
+            st.markdown("**Is this policy applicable to children under 18?**  \n_If your services are used by minors, Section 9 applies._")
+            children_data = st.radio(" ", ["No", "Yes"], horizontal=True, key="children_data")
+
+        # --- Group 3: Legal Basis & Consent ---
+        with st.expander("Legal Basis for Processing", expanded=False):
+            st.markdown("**Lawful Purpose for Data Collection***  \n_Why are you collecting personal data? e.g., Delivering services, fraud prevention._")
+            lawful_purpose = st.text_input(" ", key="lawful_purpose")
+        
+            st.markdown("**Type of Consent Taken***  \n_How do you obtain consent? Explicit (opt-in), Deemed (via use), or just Notice._")
+            consent_type = st.selectbox(" ", [
+                "Explicit Consent", "Deemed Consent", "Notice Only (limited use cases)"
+            ], key="consent_type")
+        
+            st.markdown("**Special Purpose under Section 7 (Optional)**  \n_If you process data without consent for employment, emergency, or public interest, select here._")
+            legitimate_use = st.multiselect(" ", [
+                "Employment Purposes", "Medical Emergency", "Government Function", "Disaster Response", "Public Interest", "None of the Above"
+            ], key="legitimate_use")
+
+        # --- Group 4: Retention, Security, and Sharing ---
+        with st.expander("Retention & Data Sharing", expanded=False):
+            st.markdown("**Data Retention Duration***  \n_How long do you retain data? Must be justified under Section 8(7)._")
+            retention_period = st.text_input(" ", key="retention_period")
+        
+            st.markdown("**Is Data Shared Internationally?***  \n_Required under Section 16. Mention if data is processed outside India._")
+            cross_border = st.radio(" ", ["Yes", "No"], horizontal=True, key="cross_border")
+    
+        # --- Group 5: Grievance Contact Info ---
+        with st.expander("Grievance Redressal Contact", expanded=False):
+            st.markdown("**Grievance Officer Contact Email***  \n_As per Section 10, provide a contact for complaints or data requests._")
+            grievance_email = st.text_input(" ", key="grievance_email")
+
+        # --- Generate Button ---
+        if st.button("Generate DPDPA-Compliant Policy with GPT"):
+            errors = []
+            if policy_type == "-- Select Policy Type --":
+                errors.append("Policy Type")
+            if not org_name.strip():
+                errors.append("Organization Name")
+            if sector_dropdown == "-- Select Sector --" and not sector_custom.strip():
+                errors.append("Sector")
+            if not data_types_common and not data_types_custom.strip():
+                errors.append("Data Types")
+            if not lawful_purpose.strip():
+                errors.append("Lawful Purpose")
+            if not retention_period.strip():
+                errors.append("Data Retention Duration")
+            if not grievance_email.strip():
+                errors.append("Grievance Officer Contact Email")
+    
+            if errors:
+                st.error("Please fill the following mandatory fields: " + ", ".join(errors))
+            else:
+                sector_final = sector_custom if sector_custom else sector_dropdown
+                data_types_final = data_types_common + [dt.strip() for dt in data_types_custom.split(",") if dt.strip()]
+                special_uses = ", ".join(legitimate_use) if legitimate_use else "None"
+    
+                with st.spinner("Generating policy... please wait."):
+                    prompt = f"""
+    You are a legal policy assistant. Draft a comprehensive, DPDPA-compliant {policy_type.lower()} for the following organization.
+    
+    **Organization Details**:
+    - Name: {org_name}
+    - Sector: {sector_final}
+    
+    **Data Handling**:
+    - Data Types Collected: {", ".join(data_types_final)}
+    - Applicable to Children (<18): {children_data}
+    - Shared Internationally: {cross_border}
+    
+    **Legal Basis**:
+    - Lawful Purpose: {lawful_purpose}
+    - Consent Type: {consent_type}
+    - Special Use Cases (Sec 7): {special_uses}
+    
+    **Retention & Redressal**:
+    - Retention Period: {retention_period}
+    - Grievance Contact: {grievance_email}
+    
+    **Compliance Requirements**:
+    Ensure the policy covers all obligations under the Digital Personal Data Protection Act, 2023 (India), including:
+    - Lawful purpose (Sec 4)
+    - Informed consent (Sec 6)
+    - Notice obligations (Sec 5)
+    - Grievance handling (Sec 10)
+    - Data accuracy (Sec 8.3)
+    - Security safeguards (Sec 8.5)
+    - Erasure after purpose is fulfilled or consent withdrawn (Sec 8.7)
+    - Special clauses for children (Sec 9) if applicable
+    - International transfer declaration (Sec 16)
+    
+    Write the policy in clear, professional English with practical sections like: Purpose, Scope, Data Types, Lawful Use, Consent, Security, Retention, Rights, Grievance Redressal, Contact.
+    
+    Return only the policy draft (no disclaimers or titles).
+                    """
+                    try:
+                        draft = call_gpt_text(prompt)
+                        st.session_state["full_policy_draft"] = draft
+                        st.success("✅ DPDPA-compliant draft generated successfully!")
+                    except Exception as e:
+                        st.error(f"❌ GPT Error: {e}")
+    
+        # --- Output Editor ---
+        if "full_policy_draft" in st.session_state:
+            st.markdown("---")
+            st.markdown("### Edit Your Policy")
+            edited = st.text_area("Modify the policy text below:", value=st.session_state["full_policy_draft"], height=400, key="full_policy_editor")
+    
+            col1, col2, col3, col4 = st.columns(4)
+
+            # --- Save in Session ---
+            with col1:
+                if st.button("💾 Save (Session Only)"):
+                    st.session_state["saved_full_policy"] = edited
+                    st.success("Draft saved temporarily in session.")
+            
+            # --- Export to .docx ---
+            with col2:
+                if st.button("⬇️ Export to Word (.docx)"):
+                    doc = Document()
+                    doc.add_heading(f"{policy_type} - Generated Policy", level=1)
+                    for para in edited.split("\n"):
+                        doc.add_paragraph(para)
+                    buffer = io.BytesIO()
+                    doc.save(buffer)
+                    buffer.seek(0)
+                    st.download_button(
+                        label="📄 Download Word File",
+                        data=buffer,
+                        file_name=f"{org_name.replace(' ', '_')}_DPDPA_policy.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+            
+            # --- Export to .txt ---
+            with col3:
+                if st.button("⬇️ Export to TXT"):
+                    st.download_button(
+                        label="📄 Download TXT File",
+                        data=edited,
+                        file_name=f"{org_name.replace(' ', '_')}_DPDPA_policy.txt",
+                        mime="text/plain"
+                    )
+            
+            # --- Save Draft to JSON ---
+            with col4:
+                if st.button("💾 Save to File (.json)"):
+                    draft_data = {
+                        "policy": edited,
+                        "timestamp": str(datetime.datetime.now()),
+                        "org_name": org_name,
+                        "policy_type": policy_type
+                    }
+                    st.download_button(
+                        label="📁 Download Draft as JSON",
+                        data=json.dumps(draft_data, indent=2),
+                        file_name=f"{org_name.replace(' ', '_')}_DPDPA_draft.json",
+                        mime="application/json"
+                    )
 
     with tab2:
-        st.subheader("Section-wise Generator")
-        section = st.selectbox("Choose Section", ["Notice", "Consent", "Data Principal Rights", "Security"])
-        st.text_area(f"Draft for {section}:", height=200)
-        st.button("Suggest Completion")
+        with tab2:
+            st.markdown("### Generate a Specific Section of Your Policy")
+            st.caption("Use this tool to draft a single section aligned with a DPDPA requirement.")
+        
+            # --- Section Selection ---
+            section_map = {
+                "Section 4 — Grounds for Processing Personal Data": "4",
+                "Section 5 — Notice to Data Principal": "5",
+                "Section 6 — Consent & Withdrawal": "6",
+                "Section 7 — Legitimate Use Cases": "7",
+                "Section 8 — Accuracy, Retention & Security": "8",
+                "Section 9 — Processing Children's Data": "9",
+                "Section 10 — Grievance Redressal": "10"
+            }
+        
+            st.markdown("**Select DPDPA Section***")
+            section_label = st.selectbox("", list(section_map.keys()))
+            section_id = section_map[section_label]
+        
+            # --- Prompt Box ---
+            st.markdown("**What part of this section would you like to draft?***")
+            st.caption("Example: 'Explain how users can withdraw consent' or 'Write a grievance escalation flow.'")
+            custom_instruction = st.text_area("", height=100, key="section_prompt")
+        
+            # --- Optional Context ---
+            st.markdown("**Add Organizational Context (optional)**")
+            st.caption("Mention platform name, sector, or audience if needed (e.g., fintech app, KYC users).")
+            org_context = st.text_input("", key="section_context")
+        
+            # --- Generate Button ---
+            if st.button("Generate Section"):
+                if not custom_instruction.strip():
+                    st.warning("Please describe what you want GPT to generate.")
+                else:
+                    with st.spinner("Generating policy section..."):
+                        section_prompt = f"""
+        You are a legal assistant drafting a policy section aligned with India's Digital Personal Data Protection Act (DPDPA), 2023.
+        
+        Draft a clear, compliant, and standalone section for:
+        
+        **DPDPA Section {section_id} – {section_label.split('—')[-1].strip()}**
+        
+        Instruction from user: "{custom_instruction.strip()}"
+        
+        {f'Context: {org_context.strip()}' if org_context.strip() else ''}
+        
+        Write in plain legal English. Make it usable as-is inside a larger privacy policy.
+        Return only the section text. Do not include headings or disclaimers.
+                        """
+                        try:
+                            section_output = call_gpt_text(section_prompt)
+                            st.session_state["section_output"] = section_output
+                            st.success("✅ Section draft generated successfully!")
+                        except Exception as e:
+                            st.error(f"❌ GPT Error: {e}")
+        
+            # --- Output Editor ---
+            if "section_output" in st.session_state:
+                st.markdown("---")
+                st.markdown("### Edit Your Section")
+                edited_section = st.text_area("You can make final changes below:", value=st.session_state["section_output"], height=300, key="section_editor")
+        
+                col1, col2, col3, col4 = st.columns(4)
+        
+                with col1:
+                    if st.button("Save (Session Only)", key="save_section"):
+                        st.session_state["saved_section"] = edited_section
+                        st.success("Section saved temporarily in session.")
+        
+                with col2:
+                    if st.button("⬇️ Export as Word", key="export_section_docx"):
+                        doc = Document()
+                        doc.add_heading(section_label, level=1)
+                        for para in edited_section.split("\n"):
+                            doc.add_paragraph(para)
+                        buffer = io.BytesIO()
+                        doc.save(buffer)
+                        buffer.seek(0)
+                        st.download_button(
+                            label="📄 Download Word File",
+                            data=buffer,
+                            file_name=f"DPDPA_Section_{section_id}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        )
+        
+                with col3:
+                    if st.button("⬇️ Export as TXT", key="export_section_txt"):
+                        st.download_button(
+                            label="📄 Download TXT File",
+                            data=edited_section,
+                            file_name=f"DPDPA_Section_{section_id}.txt",
+                            mime="text/plain"
+                        )
+        
+                with col4:
+                    if st.button("💾 Save to File (JSON)", key="export_section_json"):
+                        section_data = {
+                            "section": section_id,
+                            "title": section_label,
+                            "content": edited_section,
+                            "user_instruction": custom_instruction,
+                            "org_context": org_context
+                        }
+                        st.download_button(
+                            label="📁 Download JSON Draft",
+                            data=json.dumps(section_data, indent=2),
+                            file_name=f"DPDPA_Section_{section_id}_Draft.json",
+                            mime="application/json"
+                        )
 
     with tab3:
-        st.subheader("Lifecycle-wise Template")
-        st.markdown("Fill stage-specific privacy info:")
-        stages = ["Collection", "Processing", "Storage", "Sharing", "Erasure"]
-        for stage in stages:
-            st.text_area(f"{stage} Stage", key=stage)
+        st.markdown("### Generate Policy by Data Lifecycle Stage")
+        st.caption("Use this to generate a specific part of your privacy or retention policy aligned with how data is collected, processed, stored, or shared.")
+    
+        # --- Lifecycle Options ---
+        lifecycle_options = {
+            "Data Collection": "Describe what data is collected, from whom, how, and with what consent.",
+            "Data Processing": "Explain the purpose and method of processing the data, along with any automation or profiling.",
+            "Data Storage": "Detail where data is stored, for how long, and the technical and organizational safeguards.",
+            "Data Sharing": "Outline what data is shared, with whom (internal or third party), and under what agreements."
+        }
+    
+        st.markdown("#### Select Lifecycle Stage")
+        lifecycle_stage = st.selectbox("", list(lifecycle_options.keys()))
+    
+        # --- Suggested Template ---
+        st.markdown("#### Template Prompt Suggestion")
+        st.caption("Modify or use the suggested wording below.")
+        default_instruction = lifecycle_options[lifecycle_stage]
+        lifecycle_prompt = st.text_area("", value=default_instruction, height=100, key="lifecycle_prompt")
+    
+        # --- Optional Context ---
+        st.markdown("#### Add Organizational Context (optional)")
+        st.caption("Include platform name, sector, audience, or known risks (e.g., fintech app handling financial data).")
+        lifecycle_context = st.text_input("", key="lifecycle_context")
+    
+        # --- Generate Section ---
+        if st.button("Generate Lifecycle Policy Section"):
+            if not lifecycle_prompt.strip():
+                st.warning("Please enter or confirm the prompt.")
+            else:
+                with st.spinner("Generating section..."):
+                    lifecycle_prompt_text = f"""
+    You are a policy assistant generating a data privacy policy section for a specific lifecycle stage.
+    
+    **Lifecycle Stage**: {lifecycle_stage}
+    **Instruction**: {lifecycle_prompt.strip()}
+    {f"Context: {lifecycle_context.strip()}" if lifecycle_context.strip() else ''}
+    
+    The section should be written in professional, legally sound English and suitable for direct inclusion in a privacy or retention policy. Keep it DPDPA-aligned where applicable.
+    Only output the draft content, no explanations or headings.
+                    """
+                    try:
+                        lifecycle_output = call_gpt_text(lifecycle_prompt_text)
+                        st.session_state["lifecycle_output"] = lifecycle_output
+                        st.success("✅ Section generated successfully!")
+                    except Exception as e:
+                        st.error(f"❌ GPT Error: {e}")
+    
+        # --- Output Area ---
+        if "lifecycle_output" in st.session_state:
+            st.markdown("---")
+            st.markdown(f"### Edit Lifecycle Section: {lifecycle_stage}")
+            edited_lifecycle = st.text_area("Modify the generated content below:", value=st.session_state["lifecycle_output"], height=300, key="lifecycle_editor")
+    
+            col1, col2, col3, col4 = st.columns(4)
+    
+            with col1:
+                if st.button("💾 Save (Session Only)", key="save_lifecycle"):
+                    st.session_state["saved_lifecycle"] = edited_lifecycle
+                    st.success("Saved in session.")
+    
+            with col2:
+                if st.button("⬇️ Export as Word", key="export_lifecycle_docx"):
+                    doc = Document()
+                    doc.add_heading(f"{lifecycle_stage} Policy", level=1)
+                    for para in edited_lifecycle.split("\n"):
+                        doc.add_paragraph(para)
+                    buffer = io.BytesIO()
+                    doc.save(buffer)
+                    buffer.seek(0)
+                    st.download_button(
+                        label="📄 Download Word File",
+                        data=buffer,
+                        file_name=f"{lifecycle_stage.replace(' ', '_')}_Policy.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+    
+            with col3:
+                if st.button("⬇️ Export as TXT", key="export_lifecycle_txt"):
+                    st.download_button(
+                        label="📄 Download TXT File",
+                        data=edited_lifecycle,
+                        file_name=f"{lifecycle_stage.replace(' ', '_')}_Policy.txt",
+                        mime="text/plain"
+                    )
+    
+            with col4:
+                if st.button("💾 Save as JSON", key="export_lifecycle_json"):
+                    lifecycle_data = {
+                        "stage": lifecycle_stage,
+                        "prompt": lifecycle_prompt,
+                        "context": lifecycle_context,
+                        "content": edited_lifecycle
+                    }
+                    st.download_button(
+                        label="📁 Download JSON Draft",
+                        data=json.dumps(lifecycle_data, indent=2),
+                        file_name=f"{lifecycle_stage.replace(' ', '_')}_Draft.json",
+                        mime="application/json"
+                    )
+
 
     with tab4:
-        st.subheader("GPT-Assisted Draft Builder")
-        prompt = st.text_input("Describe your need (e.g. privacy for HR data):")
-        st.button("Generate Draft")
+        st.markdown("### GPT-Assisted Draft Builder")
+        st.caption("Describe any policy section or clause you'd like GPT to help you draft. This is not limited to DPDPA or lifecycle templates.")
+    
+        # --- Prompt Textbox ---
+        st.markdown("**Describe what you need help drafting***")
+        st.caption("Example: 'Draft a biometric attendance policy for factory workers' or 'Create a privacy notice for children under 13.'")
+        free_prompt = st.text_area("", height=120, key="gpt_draft_prompt")
+    
+        # --- Optional Tags ---
+        st.markdown("**Optional Tags**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            sector_tag = st.text_input("Sector", help="e.g., Healthcare, Fintech")
+        with col2:
+            scope_tag = st.text_input("Scope", help="e.g., HR Policy, Vendor Access")
+        with col3:
+            category_tag = st.text_input("Data Category", help="e.g., Biometric, Financial")
+    
+        # --- Generate Button ---
+        if st.button("Generate with GPT", key="gpt_draft_btn"):
+            if not free_prompt.strip():
+                st.warning("Please enter a prompt.")
+            else:
+                with st.spinner("Generating your draft..."):
+                    prompt_draft_text = f"""
+    You are a policy assistant helping a user draft a professional snippet of policy language.
+    
+    Instruction: {free_prompt.strip()}
+    
+    {f"Sector: {sector_tag}" if sector_tag else ''}
+    {f"Scope: {scope_tag}" if scope_tag else ''}
+    {f"Data Category: {category_tag}" if category_tag else ''}
+    
+    Write in clear, professional policy language. Avoid filler text, disclaimers, or general advice. Return only the content of the policy.
+                    """
+                    try:
+                        gpt_draft_output = call_gpt_text(prompt_draft_text)
+                        st.session_state["gpt_draft_output"] = gpt_draft_output
+                        st.success("✅ Draft generated!")
+                    except Exception as e:
+                        st.error(f"❌ GPT Error: {e}")
+    
+        # --- Editable Output Area ---
+        if "gpt_draft_output" in st.session_state:
+            st.markdown("---")
+            st.markdown("### Edit Your Draft")
+            edited_gpt_draft = st.text_area("Make final changes below:", value=st.session_state["gpt_draft_output"], height=300, key="gpt_draft_editor")
+    
+            col1, col2, col3, col4 = st.columns(4)
+    
+            with col1:
+                if st.button("💾 Save (Session Only)", key="save_gpt_draft"):
+                    st.session_state["saved_gpt_draft"] = edited_gpt_draft
+                    st.success("Saved in session.")
+    
+            with col2:
+                if st.button("⬇️ Export as Word", key="export_gpt_draft_docx"):
+                    doc = Document()
+                    doc.add_heading("Custom Policy Draft", level=1)
+                    for para in edited_gpt_draft.split("\n"):
+                        doc.add_paragraph(para)
+                    buffer = io.BytesIO()
+                    doc.save(buffer)
+                    buffer.seek(0)
+                    st.download_button(
+                        label="📄 Download Word File",
+                        data=buffer,
+                        file_name=f"Custom_Policy_Draft.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+    
+            with col3:
+                if st.button("⬇️ Export as TXT", key="export_gpt_draft_txt"):
+                    st.download_button(
+                        label="📄 Download TXT File",
+                        data=edited_gpt_draft,
+                        file_name=f"Custom_Policy_Draft.txt",
+                        mime="text/plain"
+                    )
+    
+            with col4:
+                if st.button("💾 Save as JSON", key="export_gpt_draft_json"):
+                    gpt_draft_data = {
+                        "prompt": free_prompt,
+                        "sector": sector_tag,
+                        "scope": scope_tag,
+                        "category": category_tag,
+                        "content": edited_gpt_draft
+                    }
+                    st.download_button(
+                        label="📁 Download JSON Draft",
+                        data=json.dumps(gpt_draft_data, indent=2),
+                        file_name="Custom_Policy_Draft.json",
+                        mime="application/json"
+                    )
+
 
     with tab5:
-        st.subheader("Saved Drafts")
-        st.dataframe({"Draft": ["HR Policy", "Marketing Policy"], "Last Modified": ["2025-05-10", "2025-05-01"]})
+        st.markdown("### View & Manage Saved Drafts")
+        st.caption("This page lets you view, edit, rename, export, or delete any draft stored in your session or uploaded from a file.")
+    
+        # --- Session State: Collect all saved drafts ---
+        saved_drafts = {}
+        for key in st.session_state:
+            if key.startswith("saved_"):
+                label = key.replace("saved_", "").replace("_", " ").title()
+                saved_drafts[label] = st.session_state[key]
+    
+        # --- Upload JSON Draft ---
+        st.markdown("#### Upload a JSON Draft (from export)")
+        uploaded = st.file_uploader("Upload JSON file", type="json")
+        if uploaded:
+            try:
+                loaded = json.load(uploaded)
+                label = f"Uploaded: {uploaded.name}"
+                saved_drafts[label] = loaded["content"]
+                st.success(f"✅ Loaded draft: {label}")
+            except Exception as e:
+                st.error(f"❌ Error loading draft: {e}")
+    
+        if not saved_drafts:
+            st.info("No drafts found in this session. Try generating and saving one in Tabs 1–4.")
+        else:
+            draft_names = list(saved_drafts.keys())
+            selected = st.selectbox("📋 Select a draft to view/edit", draft_names)
+            current_draft = saved_drafts[selected]
+    
+            st.markdown(f"#### Editing Draft: `{selected}`")
+            edited_draft = st.text_area("You can update the draft content below:", value=current_draft, height=300, key="edit_draft")
+    
+            col1, col2, col3, col4 = st.columns(4)
+    
+            # --- Rename ---
+            with col1:
+                new_name = st.text_input("Rename this draft as", value=selected, key="rename_field")
+                if st.button("🔁 Rename Draft"):
+                    st.session_state[f"saved_{new_name.replace(' ', '_').lower()}"] = edited_draft
+                    if f"saved_{selected.replace(' ', '_').lower()}" in st.session_state:
+                        del st.session_state[f"saved_{selected.replace(' ', '_').lower()}"]
+                    st.success("✅ Draft renamed successfully. Refresh the dropdown to see updated name.")
+    
+            # --- Export .docx ---
+            with col2:
+                if st.button("⬇️ Export as Word (.docx)", key="export_word_saved"):
+                    doc = Document()
+                    doc.add_heading(f"{selected} Draft", level=1)
+                    for para in edited_draft.split("\n"):
+                        doc.add_paragraph(para)
+                    buffer = io.BytesIO()
+                    doc.save(buffer)
+                    buffer.seek(0)
+                    st.download_button(
+                        label="📄 Download Word File",
+                        data=buffer,
+                        file_name=f"{selected.replace(' ', '_')}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+    
+            # --- Export .txt ---
+            with col3:
+                if st.button("⬇️ Export as TXT", key="export_txt_saved"):
+                    st.download_button(
+                        label="📄 Download TXT File",
+                        data=edited_draft,
+                        file_name=f"{selected.replace(' ', '_')}.txt",
+                        mime="text/plain"
+                    )
+    
+            # --- Export .json ---
+            with col4:
+                if st.button("💾 Download JSON", key="export_json_saved"):
+                    st.download_button(
+                        label="📁 Download JSON File",
+                        data=json.dumps({"name": selected, "content": edited_draft}, indent=2),
+                        file_name=f"{selected.replace(' ', '_')}.json",
+                        mime="application/json"
+                    )
+    
+            # --- Delete from session ---
+            if st.button("🗑️ Delete Draft", key="delete_draft_btn"):
+                del_key = f"saved_{selected.replace(' ', '_').lower()}"
+                if del_key in st.session_state:
+                    del st.session_state[del_key]
+                    st.success(f"Draft `{selected}` deleted. Refresh to confirm.")
+
 
 # --- Policy Compliance Checker ---
 elif menu == "Policy Compliance Checker":
@@ -514,7 +1004,6 @@ elif menu == "Policy Compliance Checker":
         else:
             policy_text = ""
 
-
     #st.header("4. Industry Context (Optional)")
     st.markdown("<h3 style='font-size:24px; font-weight:700;'>2. Industry Context (Optional)</h3>", unsafe_allow_html=True)
     industry = st.selectbox("", ["General", "Automotive", "Healthcare", "Fintech", "Other"])
@@ -524,82 +1013,192 @@ elif menu == "Policy Compliance Checker":
         custom_industry = None
 
     st.markdown("<h3 style='font-size:24px; font-weight:700;'>3. Choose DPDPA Section</h3>", unsafe_allow_html=True)
+    # section_options = list(dpdpa_checklists.keys()) + ["All Sections"]
     section_options = [f"{sid} — {dpdpa_checklists[sid]['title']}" for sid in dpdpa_checklists] + ["All Sections"]
-    section_id = st.selectbox("Choose DPDPA Section", section_options)
-    section_key = section_id.split(" — ")[0] if " — " in section_id else section_id
-    
-    # Run
+    section_id = st.selectbox("", options=section_options)
+
     st.markdown("<h3 style='font-size:24px; font-weight:700;'>4. Run Compliance Check</h3>", unsafe_allow_html=True)
     if st.button("Run Compliance Check"):
-        with st.spinner("🧠 Running GPT analysis..."):
-            raw_blocks = break_into_blocks(policy_text)
-            # blocks = [b for b in raw_blocks if is_valid_block(b["text"])]
-            blocks = [{"block_id": f"BLOCK{i+1}", "text": b} for i, b in enumerate(raw_blocks) if is_valid_block(b)]
-            st.markdown(f"✅ Detected **{len(blocks)}** valid blocks for evaluation.")
-            with st.expander("📄 Preview: Blocks being sent to GPT", expanded=False):
-                for block in blocks:
-                    st.markdown(f"**{block['block_id']}:**")
-                    st.markdown(block["text"])
-                    st.markdown("---")
-    
-            st.markdown("### ⚙️ Evaluation Settings")
-            st.markdown(f"- **Selected Section:** {section_id}")
-            st.markdown(f"- **Industry Context:** General")
-            st.markdown("---")
-    
-            compiledOutput = []
-    
-            if section_key == "All Sections":
-                st.markdown("#### 📘 Running for **All Sections**")
-                for sid in dpdpa_checklists:
-                    st.markdown(f"### 🔍 Section {sid}: {dpdpa_checklists[sid]['title']}")
-                    checklist_items = dpdpa_checklists[sid]["items"]
-                    checklist_ids = [item["id"] for item in checklist_items]
-                    for block in blocks:
-                        result = analyze_block_against_section(sid, block, checklist_items, client)
-                        if result:
-                            update_compiled_output(compiledOutput, result)
-                final_summary = generate_final_summary(compiledOutput, checklist_ids)
-            else:
-                st.markdown(f"#### 📘 Running for **Section {section_key}: {dpdpa_checklists[section_key]['title']}**")
-                checklist_items = dpdpa_checklists[section_key]["items"]
-                checklist_ids = [item["id"] for item in checklist_items]
-                for block in blocks:
-                    result = analyze_block_against_section(section_key, block, checklist_items, client)
-                    st.write(f"🔍 GPT result for {block['block_id']}", result)
-                    if result:
-                        update_compiled_output(compiledOutput, result)
-                        st.write("✅ Updating compiled output with:", result)
-                final_summary = generate_final_summary(compiledOutput, checklist_ids)
-    
-            st.success("✅ GPT evaluation complete. Displaying results...")
-    
-            st.markdown("### 📋 Final Checklist Coverage")
-            st.write("DEBUG: Final Summary Output", final_summary)
+        if policy_text:
+            result = []
+            with st.spinner("Running GPT-based compliance evaluation..."):
+                if section_id == "All Sections":
+                    all_results = []  # 🔁 collect each section's result
 
-            for item in final_summary:
-                coverage = item["coverage"]
-                color = {
-                    "Explicitly Mentioned": "#198754",
-                    "Partially Mentioned": "#FFC107",
-                    "Missing": "#DC3545"
-                }.get(coverage, "#6c757d")
-    
-                st.markdown(f"""
-                <div style="margin-bottom:12px;">
-                    <strong>{item['checklist_id']}</strong><br>
-                    <span style="color:white;background-color:{color};padding:3px 10px;border-radius:6px;font-size:13px;">{coverage}</span>
-                    <span style="margin-left:10px;">Confidence Score: {item['confidence_score']}</span>
-                </div>
-                """, unsafe_allow_html=True)
-    
-                if item["matches"]:
-                    with st.expander("📌 Matches & Justifications"):
-                        for m in item["matches"]:
-                            st.markdown(f"> {m}")
+                    for sid in dpdpa_checklists:
+                        st.markdown(f"## ✅ Processing Section {sid} — {dpdpa_checklists[sid]['title']}")
+                        checklist = dpdpa_checklists[sid]["items"]
+                        result = analyze_policy_section(sid, checklist, policy_text)
+                        all_results.append(result)
+            
+                        with st.expander(f"Section {result['Section']} — {result['Title']}", expanded=True):
+                            level_color = {
+                                "Fully Compliant": "#198754",
+                                "Partially Compliant": "#FFC107",
+                                "Non-Compliant": "#DC3545"
+                            }
+                            match_level = result["Match Level"]
+                            color = level_color.get(match_level, "#6C757D")
+            
+                            st.markdown(f"""
+                            <div style="margin-bottom: 1rem;">
+                              <b>Compliance Score:</b>
+                              <span style="background-color:#0d6efd; color:white; padding:4px 10px; border-radius:5px; font-size:0.85rem;">
+                                {result["Compliance Score"]}
+                              </span><br>
+                              <b>Match Level:</b>
+                              <span style="background-color:{color}; color:black; padding:4px 10px; border-radius:5px; font-size:0.85rem;">
+                                {match_level}
+                              </span>
+                            </div>
+                            """, unsafe_allow_html=True)
+            
+                            st.markdown("### 📋 Checklist Items Matched:")
+                            for item in result["Checklist Items Matched"]:
+                                st.markdown(f"- {item}")
+            
+                            st.markdown("### 🔍 Matched Details:")
+                            for item in result["Matched Details"]:
+                                status = item.get("Status", "Missing")
+                                badge_color = {
+                                    "Explicitly Mentioned": "#198754",
+                                    "Partially Mentioned": "#FFC107",
+                                    "Missing": "#DC3545"
+                                }.get(status, "#6c757d")
+            
+                                st.markdown(f"""
+                                **{item['Checklist Item ID']} — {item['Checklist Text']}**  
+                                <span style="color:white;background-color:{badge_color};padding:3px 10px;border-radius:6px;font-size:13px;">{status}</span>  
+                                <br><small>📝 {item.get("Justification", "No justification")}</small>
+                                """, unsafe_allow_html=True)
+            
+                            st.markdown("### ✏️ Suggested Rewrite:")
+                            st.info(result["Suggested Rewrite"])
+            
+                            st.markdown("### 🧾 Simplified Legal Meaning:")
+                            st.success(result["Simplified Legal Meaning"])
+            
+                    # ✅ Combined Export Section
+                    st.markdown("## 📥 Export Combined Results")
+            
+                    # --- JSON Export ---
+                    combined_json = json.dumps(all_results, indent=2)
+                    combined_json_bytes = io.BytesIO(combined_json.encode("utf-8"))
+                    st.download_button(
+                        label="📥 Download Combined JSON",
+                        data=combined_json_bytes,
+                        file_name="DPDPA_All_Sections_Combined.json",
+                        mime="application/json"
+                    )
+            
+                    # --- CSV Export ---
+                    combined_rows = []
+                    for result in all_results:
+                        for item in result["Matched Details"]:
+                            combined_rows.append({
+                                "Section": result["Section"],
+                                "Checklist Item ID": item["Checklist Item ID"],
+                                "Checklist Text": item["Checklist Text"],
+                                "Status": item["Status"],
+                                "Justification": item["Justification"],
+                                "Match Level": result["Match Level"],
+                                "Score": result["Compliance Score"]
+                            })
+            
+                    combined_csv = pd.DataFrame(combined_rows)
+                    combined_csv_bytes = io.BytesIO()
+                    combined_csv.to_csv(combined_csv_bytes, index=False)
+                    combined_csv_bytes.seek(0)
+            
+                    st.download_button(
+                        label="📥 Download Combined CSV",
+                        data=combined_csv_bytes,
+                        file_name="DPDPA_All_Sections_Evaluation.csv",
+                        mime="text/csv"
+                    )
                 else:
-                    st.markdown("*No matches found.*")
-    
-                st.markdown("---")
+                    section_num = section_id.split(" — ")[0] if " — " in section_id else section_id
+                    checklist = dpdpa_checklists[section_num]['items']
 
+                    result = analyze_policy_section(section_num, checklist, policy_text)
+                    st.markdown(f"""
+                    <div style='font-size:20px; font-weight:700; margin-top:25px; margin-bottom:-10px;'>
+                    📘 Section {result['Section']} — {result['Title']}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    with st.expander("", expanded=True):
 
+                        # Set color for Match Level badge
+                        level_color = {
+                            "Fully Compliant": "#198754",     # green
+                            "Partially Compliant": "#FFC107", # yellow
+                            "Non-Compliant": "#DC3545"        # red
+                        }
+                        match_level = result["Match Level"]
+                        color = level_color.get(match_level, "#6C757D")  # fallback grey
+                        
+                        st.markdown(f"""
+                        <div style="margin-bottom: 1rem;">
+                          <b>Compliance Score:</b>
+                          <span style="background-color:#0d6efd; color:white; padding:4px 10px; border-radius:5px; font-size:0.85rem;">
+                            {result["Compliance Score"]}
+                          </span><br>
+                          <b>Match Level:</b>
+                          <span style="background-color:{color}; color:black; padding:4px 10px; border-radius:5px; font-size:0.85rem;">
+                            {match_level}
+                          </span>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    
+                        st.markdown("### 📋 Checklist Items Matched:")
+                        for i, item in enumerate(result["Checklist Items Matched"]):
+                            st.markdown(f"- {item}")
+            
+                        st.markdown("### 🔍 Matched Details:")
+                        for item in result["Matched Details"]:
+                            status = item.get("Status", "Missing")
+                            color = {
+                                "Explicitly Mentioned": "#198754",
+                                "Partially Mentioned": "#FFC107",
+                                "Missing": "#DC3545"
+                            }.get(status, "#6c757d")
+                        
+                            item_id = item.get("Checklist Item ID", "❓")
+                            item_text = item.get("Checklist Text", "❓")
+                            justification = item.get("Justification", "No justification found.")
+                        
+                            st.markdown(f"""
+                        **{item_id} — {item_text}**  
+                        <span style="color:white;background-color:{color};padding:3px 10px;border-radius:6px;font-size:13px;">{status}</span>  
+                        <br><small>📝 {justification}</small>
+                        """, unsafe_allow_html=True)
+                    
+                        st.markdown("### ✏️ Suggested Rewrite:")
+                        st.info(result["Suggested Rewrite"])
+                    
+                        st.markdown("### 🧾 Simplified Legal Meaning:")
+                        st.success(result["Simplified Legal Meaning"])
+
+                        # --- JSON Export ---
+                        json_str = json.dumps(result, indent=2)
+                        json_bytes = io.BytesIO(json_str.encode("utf-8"))
+                        st.download_button(
+                            label="📥 Download JSON Report",
+                            data=json_bytes,
+                            file_name=f"DPDPA_Section_{result['Section']}.json",
+                            mime="application/json"
+                        )
+                        
+                        # --- CSV Export ---
+                        csv_df = pd.DataFrame(result["Matched Details"])
+                        csv_bytes = io.BytesIO()
+                        csv_df.to_csv(csv_bytes, index=False)
+                        csv_bytes.seek(0)
+                        st.download_button(
+                            label="📥 Download Checklist Evaluation CSV",
+                            data=csv_bytes,
+                            file_name=f"DPDPA_Section_{result['Section']}.csv",
+                            mime="text/csv"
+                        )
