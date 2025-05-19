@@ -6,7 +6,9 @@ import re
 import fitz
 import io
 import datetime
-from docx import Document              
+from docx import Document
+from jinja2 import Template
+import streamlit.components.v1 as components
 
 # --- OpenAI Setup ---
 api_key = st.secrets["OPENAI_API_KEY"]
@@ -221,6 +223,29 @@ def analyze_policy_section(section_id, checklist, policy_text, model="gpt-4"):
         "Suggested Rewrite": result.get("Suggested Rewrite", ""),
         "Simplified Legal Meaning": result.get("Simplified Legal Meaning", "")
     }
+
+def render_slide(section_data):
+    with open("template_full.html", "r") as file:
+        template = Template(file.read())
+
+    counts = {"Missing": 0, "Partially Mentioned": 0, "Explicitly Mentioned": 0}
+    for item in section_data.get("Matched Details", []):
+        status = item.get("Status")
+        if status in counts:
+            counts[status] += 1
+
+    html = template.render(
+        section_title=f"Section {section_data['Section']}: {section_data['Title']}",
+        compliance_score=round(section_data.get("Compliance Score", 0.0), 2),
+        missing_count=counts["Missing"],
+        partial_count=counts["Partially Mentioned"],
+        explicit_count=counts["Explicitly Mentioned"],
+        checklist_items=section_data.get("Checklist Items Matched", []),
+        matched_details=section_data.get("Matched Details", []),
+        suggested_rewrite=section_data.get("Suggested Rewrite", ""),
+        simplified_meaning=section_data.get("Simplified Legal Meaning", "")
+    )
+    return html
 
 def set_custom_css():
     st.markdown("""
@@ -1202,3 +1227,7 @@ elif menu == "Policy Compliance Checker":
                             file_name=f"DPDPA_Section_{result['Section']}.csv",
                             mime="text/csv"
                         )
+                        # section_data = result of your compliance checker for one section
+                        html = render_slide(section_data)
+                        components.html(html, height=1200, scrolling=True)
+
