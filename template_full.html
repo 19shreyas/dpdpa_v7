@@ -1,0 +1,106 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ section_title }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; background-color: #2E2E38; color: white; }
+        .slide { width: 1280px; min-height: 1000px; padding: 40px 100px; box-sizing: border-box; }
+        .slide-title { font-size: 36px; font-weight: bold; color: white; margin-bottom: 20px; border-bottom: 4px solid #1A9AFA; display: inline-block; }
+        .chart-container { width: 100%; height: 280px; margin-bottom: 20px; }
+        .score-value { font-size: 24px; font-weight: bold; color: #1A9AFA; margin-bottom: 20px; }
+        .section { margin-bottom: 24px; }
+        .section h2 { font-size: 20px; font-weight: 600; color: #1A9AFA; margin-bottom: 10px; }
+        .item-status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-left: 10px; }
+        .missing { background-color: #FF5C5C; color: white; }
+        .partial { background-color: #FFD166; color: black; }
+        .explicit { background-color: #06D6A0; color: black; }
+        .card { background-color: rgba(255,255,255,0.1); padding: 10px 15px; border-radius: 6px; margin-top: 8px; }
+        .quote { font-size: 14px; color: #ccc; margin-top: 4px; }
+    </style>
+</head>
+<body>
+    <div class="slide">
+        <div class="slide-title">{{ section_title }}</div>
+
+        <div class="score-value">Compliance Score: {{ compliance_score }}</div>
+
+        <div class="chart-container">
+            <canvas id="statusChart"></canvas>
+        </div>
+
+        <div class="section">
+            <h2>Checklist Items Matched</h2>
+            <ul>
+                {% for item in checklist_items %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+
+        <div class="section">
+            <h2>Matched Details</h2>
+            {% for item in matched_details %}
+            <div class="card">
+                <div><strong>{{ item["Checklist Item ID"] }}</strong> — {{ item["Checklist Text"] }}
+                    {% if item["Status"] == "Missing" %}
+                    <span class="item-status missing">Missing</span>
+                    {% elif item["Status"] == "Partially Mentioned" %}
+                    <span class="item-status partial">Partially Mentioned</span>
+                    {% elif item["Status"] == "Explicitly Mentioned" %}
+                    <span class="item-status explicit">Explicitly Mentioned</span>
+                    {% endif %}
+                </div>
+                <div class="quote">{{ item["Justification"] }}</div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="section">
+            <h2>✏️ Suggested Rewrite</h2>
+            <div class="card">{{ suggested_rewrite }}</div>
+        </div>
+
+        <div class="section">
+            <h2>📘 Simplified Legal Meaning</h2>
+            <div class="card">{{ simplified_meaning }}</div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const ctx = document.getElementById('statusChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['Missing', 'Partial', 'Explicit'],
+                    datasets: [{
+                        label: 'Checklist Item Count',
+                        data: [{{ missing_count }}, {{ partial_count }}, {{ explicit_count }}],
+                        backgroundColor: ['#FF5C5C', '#FFD166', '#06D6A0']
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: { beginAtZero: true, ticks: { color: '#C4C4CD' }, grid: { color: 'rgba(255, 255, 255, 0.1)' } },
+                        x: { ticks: { color: '#C4C4CD' }, grid: { display: false } }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#C4C4CD' } },
+                        title: {
+                            display: true,
+                            text: 'Checklist Item Status Distribution',
+                            color: '#FFFFFF',
+                            font: { size: 18, weight: 'bold' }
+                        }
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>
