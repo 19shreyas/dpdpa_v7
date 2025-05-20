@@ -1001,6 +1001,8 @@ elif menu == "Policy Compliance Checker":
             """, unsafe_allow_html=True)
 
             policy_text = extract_text_from_pdf(uploaded_pdf)
+            st.subheader("Extracted Policy Text")
+            st.text_area("Full Extracted Text", policy_text, height=500)
         else:
             policy_text = ""
 
