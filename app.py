@@ -365,10 +365,10 @@ menu = st.sidebar.radio("", [
     "Knowledge Assistant",
     "Admin Settings"
 ])
-st.sidebar.markdown("<br><br><br><br><br><br><br><br><br><br><br><br>", unsafe_allow_html=True)
+st.sidebar.markdown("<br><br><br><br><br><br><br><br><br><br><br>", unsafe_allow_html=True)
 st.sidebar.markdown("""
     <div style='padding: 0px 12px 0px 0px;'>
-        <img src='https://i.postimg.cc/wxLv2yH4/Screenshot-2025-05-26-at-8-05-56-PM-Photoroom.png' width='200'>
+        <img src='https://i.postimg.cc/Xqs9QQyF/Screenshot-2025-05-26-at-8-05-56-PM-Photoroom-1.png' width='200'>
     </div>
 """, unsafe_allow_html=True)
 # --- Homepage ---
