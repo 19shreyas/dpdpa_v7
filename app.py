@@ -365,10 +365,10 @@ menu = st.sidebar.radio("", [
     "Knowledge Assistant",
     "Admin Settings"
 ])
-st.sidebar.markdown("<br><br><br><br><br><br><br><br><br><br><br><br><br>", unsafe_allow_html=True)
+st.sidebar.markdown("<br><br><br><br><br><br><br><br><br><br><br><br>", unsafe_allow_html=True)
 st.sidebar.markdown("""
     <div style='padding: 0px 12px 0px 0px;'>
-        <img src='https://i.postimg.cc/ydgRHkRq/Comply-Gen-AI-Logo.png' width='200'>
+        <img src='https://i.postimg.cc/ydgRHkRq/Comply-Gen-AI-Logo.png' width='250'>
     </div>
 """, unsafe_allow_html=True)
 # --- Homepage ---
